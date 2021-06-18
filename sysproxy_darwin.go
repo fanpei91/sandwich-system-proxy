@@ -20,13 +20,12 @@ func setSysProxy(listenAddr string) error {
 	}
 
 	networkservice := getNetworkInterface()
-
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxy %s %s %s", networkservice, host, port))
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxy '%s' %s %s", networkservice, host, port))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(string(out) + err.Error())
 	}
 
-	cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setwebproxy %s %s %s", networkservice, host, port))
+	cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setwebproxy '%s' %s %s", networkservice, host, port))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(string(out) + err.Error())
 	}
@@ -36,12 +35,12 @@ func setSysProxy(listenAddr string) error {
 
 func unsetSysProxy() error {
 	networkservice := getNetworkInterface()
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxystate %s %s", networkservice, "off"))
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxystate '%s' %s", networkservice, "off"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(string(out) + err.Error())
 	}
 
-	cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setwebproxystate %s %s", networkservice, "off"))
+	cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setwebproxystate '%s' %s", networkservice, "off"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(string(out) + err.Error())
 	}
