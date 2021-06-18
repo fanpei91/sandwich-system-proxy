@@ -29,6 +29,7 @@ type options struct {
 	disableAutoCrossFirewall bool
 	staticTTLInSeconds       int
 	rateLimit                bool
+	listenMode               string
 }
 
 var (
@@ -52,6 +53,7 @@ func main() {
 	flag.BoolVar(&flags.disableAutoCrossFirewall, "disable-auto-cross-firewall", false, "disable auto cross firewall")
 	flag.IntVar(&flags.staticTTLInSeconds, "static-dns-ttl", 86400, "use static dns ttl")
 	flag.BoolVar(&flags.rateLimit, "rate-limit", false, "rate limit")
+	flag.StringVar(&flags.listenMode, "listen-mode", "default", "lient mode, includes all and default. all:  listen for All activated network services")
 	flag.Parse()
 
 	daemon.SetSigHandler(termHandler, syscall.SIGQUIT, syscall.SIGTERM)
@@ -150,7 +152,7 @@ func startLocalProxy(o options, listener net.Listener, errChan chan<- error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	setSysProxy(o.listenAddr)
+	setSysProxy(o.listenAddr, o.listenMode)
 
 	s := cron.New()
 	s.AddFunc("@every 4h", func() {
@@ -179,6 +181,6 @@ func startRemoteProxy(o options, listener net.Listener, errChan chan<- error) {
 }
 
 func termHandler(_ os.Signal) (err error) {
-	unsetSysProxy()
+	unsetSysProxy(flags.listenMode)
 	return daemon.ErrStop
 }
