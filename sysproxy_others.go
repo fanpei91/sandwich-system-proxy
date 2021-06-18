@@ -2,10 +2,10 @@
 
 package main
 
-func setSysProxy(_ string) error {
+func setSysProxy(_, _ string) error {
 	return nil
 }
 
-func unsetSysProxy() error {
+func unsetSysProxy(_ string) error {
 	return nil
 }
