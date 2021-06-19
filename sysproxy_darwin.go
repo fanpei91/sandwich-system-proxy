@@ -37,7 +37,6 @@ func setSysProxy(listenAddr, mode string) error {
 
 func unsetSysProxy(mode string) error {
 	networkservices := getNetworkInterfaces(mode)
-	fmt.Println("unetworkservices(mode string)", mode, networkservices)
 	for _, networkservice := range networkservices {
 		cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxystate '%s' %s", networkservice, "off"))
 		if out, err := cmd.CombinedOutput(); err != nil {

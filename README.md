@@ -32,6 +32,3 @@ sandwich 是一个傻瓜化、实现简单、伪装强、安全、基于 HTTPS �
 所有支持系统代理的应用程序，比如 Slack，Chrome，Safari 之类的 HTTP/HTTPS 请求，都会发到 sandwich local proxy 通过 IP 段来决定是否需要转发到海外 sandwich 代理。
 
 如果你用的程序不支持系统代理，但支持手动设置，可手动设置程序的 HTTP/HTTPS 代理为 sandwich local 监听地址。对于两者都不支持的应用程序，比如 ssh 命令行程序，可使用 Proxifier 来强制它走 sandwish local 代理。
-
-# TODO
-* 通过创建 Tun 虚拟网卡实现透明代理
