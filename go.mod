@@ -9,5 +9,5 @@ require (
 	github.com/robfig/cron/v3 v3.0.0
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/stretchr/testify v1.5.1
-	golang.org/x/sys v0.0.0-20180909124046-d0be0721c37e // indirect
+	golang.org/x/sys v0.1.0 // indirect
 )
