@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"net/http"
 	"testing"
 )
 import _ "unsafe"
@@ -15,27 +14,23 @@ func TestLookupStaticHost(t *testing.T) {
 }
 
 func TestSmartDNSLookUP(t *testing.T) {
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: nil,
-		},
-	}
-	dns := newSmartDNS((&dnsOverHostsFile{}).lookup, (&dnsOverHTTPS{client: client}).lookup, (&dnsOverUDP{}).lookup)
+	dns := newSmartDNS((&dnsOverHostsFile{}).lookup, (&dnsOverHTTPS{provider: "https://doh.360.cn/resolve"}).lookup, (&dnsOverUDP{}).lookup)
 	log.Println(dns.lookup("youtube.com"))
 	log.Println(dns.lookup("localhost"))
 	log.Println(dns.lookup("www.google.com"))
+	log.Println(dns.lookup("www.baidu.com"))
+}
+
+func TestDNSOverHTTPSLookUP(t *testing.T) {
+	dns := &dnsOverHTTPS{provider: "https://doh.360.cn/resolve"}
+	log.Println(dns.lookup("www.baidu.com"))
 }
 
 func BenchmarkSmartDNSLookUP(b *testing.B) {
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: nil,
-		},
-	}
 	var dns dns
 	dns = newSmartDNS(
 		(&dnsOverHostsFile{}).lookup,
-		(&dnsOverHTTPS{client: client}).lookup,
+		(&dnsOverHTTPS{}).lookup,
 		(&dnsOverUDP{}).lookup,
 	)
 

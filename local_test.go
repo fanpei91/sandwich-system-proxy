@@ -19,7 +19,7 @@ func TestDNSOverHTTPS(t *testing.T) {
 	}
 	local := &localProxy{
 		client: client,
-		dns:    &dnsOverHTTPS{client: client},
+		dns:    &dnsOverHTTPS{provider: "https://doh.360.cn/resolve"},
 	}
 	host := "www.baidu.com"
 	answer, _ := local.dns.lookup(host)

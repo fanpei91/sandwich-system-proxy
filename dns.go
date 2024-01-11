@@ -70,16 +70,22 @@ func (d *dnsOverUDP) lookup(host string) (ip net.IP, expriedAt time.Time) {
 }
 
 type dnsOverHTTPS struct {
-	client    *http.Client
 	staticTTL time.Duration
+	provider  string
 }
 
 func (d *dnsOverHTTPS) lookup(host string) (ip net.IP, expriedAt time.Time) {
-	provider := fmt.Sprintf("https://rubyfish.cn/dns-query?name=%s", host)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+
+	provider := fmt.Sprintf("%s?name=%s", d.provider, host)
 	req, _ := http.NewRequest(http.MethodGet, provider, nil)
 	req.Header.Set("Accept", "application/dns-json")
 
-	res, err := d.client.Do(req)
+	res, err := client.Do(req)
 	if res != nil {
 		defer res.Body.Close()
 	}

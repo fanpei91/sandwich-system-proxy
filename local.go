@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -54,10 +55,12 @@ func (l *localProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	req.URL.Host = targetIP.String() + ":" + port
 	if l.chinaIPRangeDB.contains(targetIP) || privateIPRange.contains(targetIP) {
+		log.Println(fmt.Sprintf("connect host %s directly", host))
 		l.direct(rw, req, targetAddr)
 		return
 	}
 
+	log.Println(fmt.Sprintf("connect host: %s, ip: %s via remote proxy", host, targetIP))
 	l.remote(rw, req)
 }
 

@@ -32,6 +32,9 @@ func TestChinaIPRangeContains(t *testing.T) {
 
 	private = "fc00::"
 	require.False(t, china.contains(net.ParseIP(private)))
+
+	cn = "183.2.172.185"
+	require.True(t, china.contains(net.ParseIP(cn)))
 }
 
 func BenchmarkIsChinaIP(b *testing.B) {

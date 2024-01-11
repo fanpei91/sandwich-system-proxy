@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ type options struct {
 	privateKeyFile           string
 	secretKey                string
 	reversedWebsite          string
+	dohProvider              string
 	disableAutoCrossFirewall bool
 	staticTTLInSeconds       int
 	rateLimit                bool
@@ -40,9 +42,9 @@ func main() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	log.SetOutput(os.Stdout)
 
-	workDir := filepath.Join(os.Getenv("HOME"), ".sandwich")
-	logFile := filepath.Join(workDir, "sandwich.log")
+	var foreground bool
 
+	flag.BoolVar(&foreground, "foreground", false, "run in foreground")
 	flag.BoolVar(&flags.remoteProxyMode, "remote-proxy-mode", false, "remote proxy mode")
 	flag.StringVar(&flags.remoteProxyAddr, "remote-proxy-addr", "https://yourdomain.com:443", "the remote proxy address to connect to")
 	flag.StringVar(&flags.listenAddr, "listen-addr", "127.0.0.1:2286", "listens on given address")
@@ -50,11 +52,48 @@ func main() {
 	flag.StringVar(&flags.privateKeyFile, "private-key-file", "", "private key file path")
 	flag.StringVar(&flags.secretKey, "secret-key", "secret key", "secrect key to cross firewall")
 	flag.StringVar(&flags.reversedWebsite, "reversed-website", "http://mirror.siena.edu/ubuntu/", "reversed website to fool firewall")
+	flag.StringVar(&flags.dohProvider, "doh-provider", "https://doh.360.cn/resolve", "DNS Over HTTPS provider")
 	flag.BoolVar(&flags.disableAutoCrossFirewall, "disable-auto-cross-firewall", false, "disable auto cross firewall")
 	flag.IntVar(&flags.staticTTLInSeconds, "static-dns-ttl", 86400, "use static dns ttl")
 	flag.BoolVar(&flags.rateLimit, "rate-limit", false, "rate limit")
-	flag.StringVar(&flags.listenMode, "listen-mode", "default", "lient mode, includes all and default. all:  listen for All activated network services")
+	flag.StringVar(&flags.listenMode, "listen-mode", "default", "listen mode, includes all and default. all:  listen for All activated network services")
 	flag.Parse()
+
+	if foreground {
+		runForeground()
+	} else {
+		runBackground()
+	}
+}
+func runForeground() {
+	var listener net.Listener
+	var err error
+
+	if listener, err = net.Listen("tcp", flags.listenAddr); err != nil {
+		log.Fatalf("error: %s", err.Error())
+	}
+
+	var errCh = make(chan error, 2)
+	if flags.remoteProxyMode {
+		go startRemoteProxy(flags, listener, errCh)
+	} else {
+		go startLocalProxy(flags, listener, errCh)
+	}
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		log.Fatalf("error: %s", err)
+	case <-sigs:
+		unsetSysProxy(flags.listenMode)
+	}
+}
+
+func runBackground() {
+	workDir := filepath.Join(os.Getenv("HOME"), ".sandwich")
+	logFile := filepath.Join(workDir, "sandwich.log")
 
 	daemon.SetSigHandler(termHandler, syscall.SIGQUIT, syscall.SIGTERM)
 
@@ -135,7 +174,7 @@ func startLocalProxy(o options, listener net.Listener, errChan chan<- error) {
 	dns := newSmartDNS(
 		(&dnsOverHostsFile{}).lookup,
 		(&dnsOverHTTPS{
-			client:    client,
+			provider:  o.dohProvider,
 			staticTTL: time.Duration(o.staticTTLInSeconds) * time.Second,
 		}).lookup,
 		(&dnsOverUDP{}).lookup,
