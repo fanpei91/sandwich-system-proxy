@@ -1,6 +1,6 @@
 # sandwich
 
-sandwich 是一个使用傻瓜化、实现简单粗暴、反深度检测、基于 HTTPS 协议、使用 IP 段而不是主机规则表决定请求去向的 Proxy。
+sandwich 是一个使用傻瓜化、实现简单粗暴、反深度检测、基于 HTTPS 协议、使用 IP 段决定流量去向的 Proxy。
 
 # 本地端
 
