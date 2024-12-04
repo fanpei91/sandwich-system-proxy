@@ -1,3 +1,4 @@
+//go:build darwin
 // +build darwin
 
 package main
@@ -10,27 +11,24 @@ import (
 )
 
 func TestSetSysProxy(t *testing.T) {
-	err := setSysProxy(":9090", "default")
+	err := setSysProxy(":9090")
 	require.Nil(t, err)
 
-	err = setSysProxy(":9090", "all")
+	err = setSysProxy(":9090")
 	require.Nil(t, err)
 }
 
 func TestUnsetSysProxy(t *testing.T) {
-	setSysProxy(":9191", "default")
-	err := unsetSysProxy("default")
+	setSysProxy(":9191")
+	err := unsetSysProxy()
 	require.Nil(t, err)
 
-	setSysProxy(":9191", "all")
-	err = unsetSysProxy("all")
+	setSysProxy(":9191")
+	err = unsetSysProxy()
 	require.Nil(t, err)
 }
 
 func TestGetNetworkInterface(t *testing.T) {
-	i := getNetworkInterfaces("default")
-	log.Println(i)
-
-	i = getNetworkInterfaces("all")
+	i := getNetworkInterfaces()
 	log.Println(i)
 }

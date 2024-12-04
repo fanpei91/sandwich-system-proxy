@@ -1,11 +1,12 @@
+//go:build !darwin
 // +build !darwin
 
 package main
 
-func setSysProxy(_, _ string) error {
+func setSysProxy(_ string) error {
 	return nil
 }
 
-func unsetSysProxy(_ string) error {
+func unsetSysProxy() error {
 	return nil
 }

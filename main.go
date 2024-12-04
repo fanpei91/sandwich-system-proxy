@@ -3,167 +3,177 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"flag"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"github.com/sevlyar/go-daemon"
+	"github.com/urfave/cli/v2"
 )
 
-type options struct {
-	remoteProxyMode          bool
-	remoteProxyAddr          string
-	listenAddr               string
-	certFile                 string
-	privateKeyFile           string
-	secretKey                string
-	reversedWebsite          string
-	dohProvider              string
-	disableAutoCrossFirewall bool
-	staticTTLInSeconds       int
-	rateLimit                bool
-	listenMode               string
+type LocalProxyFlags struct {
+	listenAddr                    string
+	remoteProxyAddr               string
+	dnsOverHttpsProvider          string
+	staticDnsTTLInSeconds         int
+	forceForwardToRemoteProxy     bool
+	secretKey                     string
+	pullLatestIPDBDurationInHours int
+}
+
+type RemoteProxyFlags struct {
+	listenAddr        string
+	certFile          string
+	privateKeyFile    string
+	staticReversedUrl string
+	ecoBandwidthMode  bool
+	secretKey         string
 }
 
 var (
-	flags options
+	localProxyFlags  LocalProxyFlags
+	remoteProxyFlags RemoteProxyFlags
 )
 
 func main() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	log.SetOutput(os.Stdout)
 
-	var foreground bool
+	localProxyCmd := &cli.Command{
+		Name:  "start-local-proxy-server",
+		Usage: "Start local proxy server",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:        "listen-addr",
+				Value:       "127.0.0.1:5686",
+				Usage:       "listen address",
+				Destination: &localProxyFlags.listenAddr,
+			},
+			&cli.StringFlag{
+				Name:        "remote-proxy-addr",
+				Value:       "https://yourdomain.com:443",
+				Usage:       "remote proxy address",
+				Destination: &localProxyFlags.remoteProxyAddr,
+			},
+			&cli.StringFlag{
+				Name:        "dns-over-https-provider",
+				Value:       "https://doh.360.cn/resolve",
+				Usage:       "DNS over HTTPS provider",
+				Destination: &localProxyFlags.dnsOverHttpsProvider,
+			},
+			&cli.IntFlag{
+				Name:        "static-dns-ttl-seconds",
+				Value:       86400,
+				Usage:       "static DNS TTL in seconds",
+				Destination: &localProxyFlags.staticDnsTTLInSeconds,
+			},
+			&cli.BoolFlag{
+				Name:        "force-forward-to-remote-proxy",
+				Value:       false,
+				Usage:       "force forward all requests to remote proxy",
+				Destination: &localProxyFlags.forceForwardToRemoteProxy,
+			},
 
-	flag.BoolVar(&foreground, "foreground", false, "run in foreground")
-	flag.BoolVar(&flags.remoteProxyMode, "remote-proxy-mode", false, "remote proxy mode")
-	flag.StringVar(&flags.remoteProxyAddr, "remote-proxy-addr", "https://yourdomain.com:443", "the remote proxy address to connect to")
-	flag.StringVar(&flags.listenAddr, "listen-addr", "127.0.0.1:2286", "listens on given address")
-	flag.StringVar(&flags.certFile, "cert-file", "", "cert file path")
-	flag.StringVar(&flags.privateKeyFile, "private-key-file", "", "private key file path")
-	flag.StringVar(&flags.secretKey, "secret-key", "secret key", "secrect key to cross firewall")
-	flag.StringVar(&flags.reversedWebsite, "reversed-website", "http://mirror.siena.edu/ubuntu/", "reversed website to fool firewall")
-	flag.StringVar(&flags.dohProvider, "doh-provider", "https://doh.360.cn/resolve", "DNS Over HTTPS provider")
-	flag.BoolVar(&flags.disableAutoCrossFirewall, "disable-auto-cross-firewall", false, "disable auto cross firewall")
-	flag.IntVar(&flags.staticTTLInSeconds, "static-dns-ttl", 86400, "use static dns ttl")
-	flag.BoolVar(&flags.rateLimit, "rate-limit", false, "rate limit")
-	flag.StringVar(&flags.listenMode, "listen-mode", "default", "listen mode, includes all and default. all:  listen for All activated network services")
-	flag.Parse()
+			&cli.IntFlag{
+				Name:        "pull-latest-ipdb-interval-in-hours",
+				Value:       4,
+				Usage:       "internal(hours) of pulling the latest IP database",
+				Destination: &localProxyFlags.pullLatestIPDBDurationInHours,
+			},
 
-	if foreground {
-		runForeground()
-	} else {
-		runBackground()
+			&cli.StringFlag{
+				Name:        "secret-key",
+				Value:       "<your secret key>",
+				Usage:       "secret key required by remote proxy",
+				Destination: &localProxyFlags.secretKey,
+			},
+		},
+		Action: localProxyServerCmdAction,
+	}
+
+	remoteProxyCmd := &cli.Command{
+		Name:  "start-remote-proxy-server",
+		Usage: "Start remote proxy server",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:        "listen-addr",
+				Value:       ":443",
+				Usage:       "listen address",
+				Destination: &remoteProxyFlags.listenAddr,
+			},
+			&cli.StringFlag{
+				Name:        "cert-file",
+				Value:       "/path/to/your.cer",
+				Usage:       "cert file path",
+				Destination: &remoteProxyFlags.certFile,
+			},
+			&cli.StringFlag{
+				Name:        "private-key-file",
+				Value:       "/path/to/your.key",
+				Usage:       "private key file path",
+				Destination: &remoteProxyFlags.privateKeyFile,
+			},
+			&cli.StringFlag{
+				Name:        "static-reversed-url",
+				Value:       "https://mirror.pilotfiber.com/ubuntu/",
+				Usage:       "static reversed url",
+				Destination: &remoteProxyFlags.staticReversedUrl,
+			},
+			&cli.BoolFlag{
+				Name:        "eco-bandwidth-mode",
+				Value:       true,
+				Usage:       "eco bandwidth mode",
+				Destination: &remoteProxyFlags.ecoBandwidthMode,
+			},
+			&cli.StringFlag{
+				Name:        "secret-key",
+				Value:       "<your secret key>",
+				Usage:       "secret key",
+				Destination: &remoteProxyFlags.secretKey,
+			},
+		},
+		Action: remoteProxyServerCmdAction,
+	}
+
+	app := &cli.App{
+		Commands: []*cli.Command{
+			localProxyCmd,
+			remoteProxyCmd,
+		},
+	}
+
+	if err := app.Run(os.Args); err != nil {
+		log.Fatalf("failed to run app: %s", err.Error())
 	}
 }
-func runForeground() {
+
+func localProxyServerCmdAction(_ *cli.Context) error {
 	var listener net.Listener
 	var err error
 
-	if listener, err = net.Listen("tcp", flags.listenAddr); err != nil {
-		log.Fatalf("error: %s", err.Error())
+	if listener, err = net.Listen("tcp", localProxyFlags.listenAddr); err != nil {
+		return errors.New("listen on local proxy address error: " + err.Error())
 	}
 
-	var errCh = make(chan error, 2)
-	if flags.remoteProxyMode {
-		go startRemoteProxy(flags, listener, errCh)
-	} else {
-		go startLocalProxy(flags, listener, errCh)
-	}
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case err := <-errCh:
-		log.Fatalf("error: %s", err)
-	case <-sigs:
-		unsetSysProxy(flags.listenMode)
-	}
-}
-
-func runBackground() {
-	workDir := filepath.Join(os.Getenv("HOME"), ".sandwich")
-	logFile := filepath.Join(workDir, "sandwich.log")
-
-	daemon.SetSigHandler(termHandler, syscall.SIGQUIT, syscall.SIGTERM)
-
-	os.MkdirAll(workDir, 0755)
-
-	cntxt := &daemon.Context{
-		PidFileName: filepath.Join(workDir, "sandwich.pid"),
-		PidFilePerm: 0644,
-		LogFileName: logFile,
-		LogFilePerm: 0640,
-		Umask:       027,
-		Args:        nil,
-	}
-
-	if len(daemon.ActiveFlags()) > 0 {
-		d, err := cntxt.Search()
-		if err != nil {
-			log.Fatalf("error: unable send signal to the daemon: %s", err.Error())
-		}
-		daemon.SendCommands(d)
-		return
-	}
-
-	d, err := cntxt.Reborn()
+	u, err := url.Parse(localProxyFlags.remoteProxyAddr)
 	if err != nil {
-		log.Fatalf("error: %s", strings.ToLower(err.Error()))
-	}
-	if d != nil {
-		return
-	}
-	defer cntxt.Release()
-
-	var listener net.Listener
-	if listener, err = net.Listen("tcp", flags.listenAddr); err != nil {
-		log.Fatalf("error: %s", err.Error())
+		return errors.New("parse remote proxy address error: " + err.Error())
 	}
 
-	var errCh = make(chan error, 2)
-	if flags.remoteProxyMode {
-		go startRemoteProxy(flags, listener, errCh)
-	} else {
-		go startLocalProxy(flags, listener, errCh)
-	}
-
-	select {
-	case err := <-errCh:
-		log.Fatalf("error: %s", err)
-	default:
-	}
-	if err = daemon.ServeSignals(); err != nil {
-		log.Fatalf("error: %s", strings.ToLower(err.Error()))
-	}
-}
-
-func startLocalProxy(o options, listener net.Listener, errChan chan<- error) {
-	var err error
-	u, err := url.Parse(o.remoteProxyAddr)
-	if err != nil {
-		errChan <- err
-		return
-	}
-
-	h := make(http.Header, 0)
-	h.Set(headerSecret, o.secretKey)
+	h := make(http.Header)
+	h.Set(headerSecret, localProxyFlags.secretKey)
 
 	client := &http.Client{
-		Timeout: time.Second * 3,
 		Transport: &http.Transport{
 			Proxy: func(request *http.Request) (i *url.URL, e error) {
-				request.Header.Set(headerSecret, o.secretKey)
+				request.Header.Set(headerSecret, localProxyFlags.secretKey)
 				return u, nil
 			},
 			TLSClientConfig:    &tls.Config{InsecureSkipVerify: false},
@@ -174,52 +184,74 @@ func startLocalProxy(o options, listener net.Listener, errChan chan<- error) {
 	dns := newSmartDNS(
 		(&dnsOverHostsFile{}).lookup,
 		(&dnsOverHTTPS{
-			provider:  o.dohProvider,
-			staticTTL: time.Duration(o.staticTTLInSeconds) * time.Second,
+			provider:  localProxyFlags.dnsOverHttpsProvider,
+			staticTTL: time.Duration(localProxyFlags.staticDnsTTLInSeconds) * time.Second,
 		}).lookup,
 		(&dnsOverUDP{}).lookup,
 	)
 
-	local := &localProxy{
-		remoteProxyAddr:   u,
-		secretKey:         o.secretKey,
-		chinaIPRangeDB:    newChinaIPRangeDB(),
-		autoCrossFirewall: !o.disableAutoCrossFirewall,
-		client:            client,
-		dns:               dns,
+	localProxy := &localProxyServer{
+		remoteProxyAddr:           u,
+		secretKey:                 localProxyFlags.secretKey,
+		chinaIPRangeDB:            newChinaIPRangeDB(),
+		forceForwardToRemoteProxy: localProxyFlags.forceForwardToRemoteProxy,
+		client:                    client,
+		dns:                       dns,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	setSysProxy(o.listenAddr, o.listenMode)
+	setSysProxy(localProxyFlags.listenAddr)
 
 	s := cron.New()
-	s.AddFunc("@every 4h", func() {
-		local.pullLatestIPRange(ctx)
+	s.AddFunc(fmt.Sprintf("@every %dh", localProxyFlags.pullLatestIPDBDurationInHours), func() {
+		log.Printf("start pulling the latest IP database at %s", time.Now())
+		if err := localProxy.pullLatestIPRange(ctx); err != nil {
+			log.Printf("failed to pull the latest IP database: %s, time: %s", err, time.Now())
+		}
+		log.Printf("end pulling the latest IP database at %s", time.Now())
 	})
 	s.Start()
 
 	defer cancel()
 
-	errChan <- http.Serve(listener, local)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigs
+		unsetSysProxy()
+		os.Exit(0)
+	}()
+
+	if err = http.Serve(listener, localProxy); err != nil {
+		return errors.New("start HTTP server error: " + err.Error())
+	}
+
+	return nil
 }
 
-func startRemoteProxy(o options, listener net.Listener, errChan chan<- error) {
+func remoteProxyServerCmdAction(_ *cli.Context) error {
+	var listener net.Listener
 	var err error
-	r := &remoteProxy{
-		rateLimit:       o.rateLimit,
-		secretKey:       o.secretKey,
-		reversedWebsite: o.reversedWebsite,
-	}
-	if o.certFile != "" && o.privateKeyFile != "" {
-		err = http.ServeTLS(listener, r, o.certFile, o.privateKeyFile)
-	} else {
-		err = http.Serve(listener, r)
-	}
-	errChan <- err
-}
 
-func termHandler(_ os.Signal) (err error) {
-	unsetSysProxy(flags.listenMode)
-	return daemon.ErrStop
+	if listener, err = net.Listen("tcp", remoteProxyFlags.listenAddr); err != nil {
+		return errors.New("listen on remote proxy address error: " + err.Error())
+	}
+
+	remoteProxy := &remoteProxyServer{
+		ecoBandwidthMode:   remoteProxyFlags.ecoBandwidthMode,
+		secretKey:          remoteProxyFlags.secretKey,
+		staticReversedAddr: remoteProxyFlags.staticReversedUrl,
+	}
+	if remoteProxyFlags.certFile != "" && remoteProxyFlags.privateKeyFile != "" {
+		if err = http.ServeTLS(listener, remoteProxy, remoteProxyFlags.certFile, remoteProxyFlags.privateKeyFile); err != nil {
+			return errors.New("start HTTPS server error: " + err.Error())
+		}
+	} else {
+		if err = http.Serve(listener, remoteProxy); err != nil {
+			return errors.New("start HTTP server error: " + err.Error())
+		}
+	}
+	return nil
 }

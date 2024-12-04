@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -89,11 +89,11 @@ func (d *dnsOverHTTPS) lookup(host string) (ip net.IP, expriedAt time.Time) {
 	if res != nil {
 		defer res.Body.Close()
 	}
-	if err != nil {
+	if err != nil || res == nil {
 		return nil, time.Now()
 	}
 
-	buf, err := ioutil.ReadAll(res.Body)
+	buf, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, time.Now()
 	}

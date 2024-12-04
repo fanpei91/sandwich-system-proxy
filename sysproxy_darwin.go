@@ -1,3 +1,4 @@
+//go:build darwin
 // +build darwin
 
 package main
@@ -10,7 +11,7 @@ import (
 	"strings"
 )
 
-func setSysProxy(listenAddr, mode string) error {
+func setSysProxy(listenAddr string) error {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
 		return err
@@ -19,7 +20,7 @@ func setSysProxy(listenAddr, mode string) error {
 		host = "127.0.0.1"
 	}
 
-	networkservices := getNetworkInterfaces(mode)
+	networkservices := getNetworkInterfaces()
 	for _, networkservice := range networkservices {
 		cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxy '%s' %s %s", networkservice, host, port))
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -35,8 +36,8 @@ func setSysProxy(listenAddr, mode string) error {
 	return nil
 }
 
-func unsetSysProxy(mode string) error {
-	networkservices := getNetworkInterfaces(mode)
+func unsetSysProxy() error {
+	networkservices := getNetworkInterfaces()
 	for _, networkservice := range networkservices {
 		cmd := exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsecurewebproxystate '%s' %s", networkservice, "off"))
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -52,13 +53,9 @@ func unsetSysProxy(mode string) error {
 	return nil
 }
 
-func getNetworkInterfaces(mode string) []string {
-	if mode == "default" {
-		output := getDefalutNetworkInterface()
-		return []string{output}
-	}
-
-	return getActivedNetworkInterfaces()
+func getNetworkInterfaces() []string {
+	output := getDefalutNetworkInterface()
+	return []string{output}
 }
 
 func getDefalutNetworkInterface() string {
@@ -72,70 +69,4 @@ func getDefalutNetworkInterface() string {
 		return "Wi-Fi"
 	}
 	return output
-}
-
-func getActivedNetworkInterfaces() []string {
-	c := exec.Command("sh", "-c", "networksetup -listnetworkserviceorder | grep 'Hardware Port'")
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return nil
-	}
-
-	interfacesMapping := map[string]string{}
-	items := strings.Split(string(out), "\n")
-	for _, line := range items {
-		device, ns := parseDeviceAndInterface(line)
-		if len(ns) > 0 {
-			interfacesMapping[device] = ns
-		}
-	}
-
-	c = exec.Command("sh", "-c", "ifconfig | pcregrep -M -o '^[^\t:]+(?=:([^\n]|\n\t)*status: active)'")
-	out, err = c.CombinedOutput()
-	if err != nil {
-		return nil
-	}
-
-	var interfaces []string
-	items = strings.Split(string(out), "\n")
-	for _, device := range items {
-		device = strings.TrimSpace(device)
-		if len(device) > 0 {
-			if ns, ok := interfacesMapping[device]; ok {
-				interfaces = append(interfaces, ns)
-			}
-		}
-	}
-
-	return interfaces
-}
-
-func parseDeviceAndInterface(line string) (string, string) {
-	if len(line) < 2 {
-		return "", ""
-	}
-
-	if line[0] == '(' {
-		line = line[1:]
-	}
-
-	if line[len(line)-1] == ')' {
-		line = line[0 : len(line)-1]
-	}
-
-	items := strings.Split(line, ",")
-	if len(items) < 2 {
-		return "", ""
-	}
-
-	ns := strings.Split(items[0], ":")
-	if len(ns) < 2 {
-		return "", ""
-	}
-	device := strings.Split(items[1], ":")
-	if len(device) < 2 {
-		return "", ""
-	}
-
-	return strings.TrimSpace(device[1]), strings.TrimSpace(ns[1])
 }
