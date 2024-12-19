@@ -13,9 +13,9 @@ import (
 )
 
 type remoteProxyServer struct {
-	secretKey          string
-	staticReversedAddr string
-	antiScraping       bool
+	secretKey              string
+	staticReversedAddr     string
+	enableWebsiteRatelimit bool
 }
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -61,49 +61,42 @@ func (proxy *remoteProxyServer) serveAsStaticReversedProxy(rw http.ResponseWrite
 	req.URL.Scheme = u.Scheme
 	req.Host = ""
 
-	if proxy.antiScraping {
-		rw = newAntiScrapingResponseWriter(rw)
+	if req.URL.Path == "/robots.txt" {
+		rw.Write([]byte("User-agent: *\nDisallow: /"))
+		return
 	}
 
-	if proxy.isWebRobotRequest(req) {
-		proxy.responseRobot(rw)
-		return
+	if proxy.enableWebsiteRatelimit {
+		rw = newRatelimitResponseWriter(rw)
 	}
 
 	httputil.NewSingleHostReverseProxy(u).ServeHTTP(rw, req)
 }
 
-func (proxy *remoteProxyServer) isWebRobotRequest(req *http.Request) bool {
-	return req.URL.Path == "/robots.txt"
-}
-func (proxy *remoteProxyServer) responseRobot(rw http.ResponseWriter) {
-	rw.Write([]byte("User-agent: *\nDisallow: /"))
-}
-
-type antiScrapingResponseWriter struct {
+type ratelimitResponseWriter struct {
 	rw      http.ResponseWriter
 	limiter io.Writer
 }
 
-func newAntiScrapingResponseWriter(rw http.ResponseWriter) *antiScrapingResponseWriter {
+func newRatelimitResponseWriter(rw http.ResponseWriter) http.ResponseWriter {
 	const defaultRate = 24 * 1024
 	const defaultCapacity = defaultRate * 2
 	bucket := ratelimit.NewBucketWithRate(defaultRate, defaultCapacity)
 	w := ratelimit.Writer(rw, bucket)
-	return &antiScrapingResponseWriter{
+	return &ratelimitResponseWriter{
 		rw:      rw,
 		limiter: w,
 	}
 }
 
-func (r *antiScrapingResponseWriter) Header() http.Header {
+func (r *ratelimitResponseWriter) Header() http.Header {
 	return r.rw.Header()
 }
 
-func (r *antiScrapingResponseWriter) Write(p []byte) (int, error) {
+func (r *ratelimitResponseWriter) Write(p []byte) (int, error) {
 	return r.limiter.Write(p)
 }
 
-func (r *antiScrapingResponseWriter) WriteHeader(statusCode int) {
+func (r *ratelimitResponseWriter) WriteHeader(statusCode int) {
 	r.rw.WriteHeader(statusCode)
 }

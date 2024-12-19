@@ -30,12 +30,12 @@ type LocalProxyFlags struct {
 }
 
 type RemoteProxyFlags struct {
-	listenAddr        string
-	domain            string
-	certCacheDir      string
-	staticReversedUrl string
-	antiScraping      bool
-	secretKey         string
+	listenAddr             string
+	domain                 string
+	certCacheDir           string
+	staticReversedUrl      string
+	enableWebsiteRatelimit bool
+	secretKey              string
 }
 
 var (
@@ -128,10 +128,10 @@ func main() {
 				Destination: &remoteProxyFlags.staticReversedUrl,
 			},
 			&cli.BoolFlag{
-				Name:        "anti-scraping",
+				Name:        "enable-website-ratelimit",
 				Value:       true,
-				Usage:       "enable anti-scraping mode",
-				Destination: &remoteProxyFlags.antiScraping,
+				Usage:       "enable rate limiting for website",
+				Destination: &remoteProxyFlags.enableWebsiteRatelimit,
 			},
 			&cli.StringFlag{
 				Name:        "secret-key",
@@ -234,9 +234,9 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 
 func remoteProxyServerCmdAction(_ *cli.Context) error {
 	remoteProxy := &remoteProxyServer{
-		antiScraping:       remoteProxyFlags.antiScraping,
-		secretKey:          remoteProxyFlags.secretKey,
-		staticReversedAddr: remoteProxyFlags.staticReversedUrl,
+		enableWebsiteRatelimit: remoteProxyFlags.enableWebsiteRatelimit,
+		secretKey:              remoteProxyFlags.secretKey,
+		staticReversedAddr:     remoteProxyFlags.staticReversedUrl,
 	}
 
 	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {
