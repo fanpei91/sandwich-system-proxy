@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/acme/autocert"
 	"log"
 	"net"
 	"net/http"
@@ -30,10 +31,10 @@ type LocalProxyFlags struct {
 
 type RemoteProxyFlags struct {
 	listenAddr        string
-	certFile          string
-	privateKeyFile    string
+	domain            string
+	certCacheDir      string
 	staticReversedUrl string
-	ecoBandwidthMode  bool
+	antiScraping      bool
 	secretKey         string
 }
 
@@ -83,7 +84,7 @@ func main() {
 
 			&cli.IntFlag{
 				Name:        "pull-latest-ipdb-interval-in-hours",
-				Value:       4,
+				Value:       24,
 				Usage:       "internal(hours) of pulling the latest IP database",
 				Destination: &localProxyFlags.pullLatestIPDBDurationInHours,
 			},
@@ -109,16 +110,16 @@ func main() {
 				Destination: &remoteProxyFlags.listenAddr,
 			},
 			&cli.StringFlag{
-				Name:        "cert-file",
-				Value:       "/path/to/your.cer",
-				Usage:       "cert file path",
-				Destination: &remoteProxyFlags.certFile,
+				Name:        "domain",
+				Value:       "www.example.com",
+				Usage:       "domain to access to certificates from Let's Encrypt",
+				Destination: &remoteProxyFlags.domain,
 			},
 			&cli.StringFlag{
-				Name:        "private-key-file",
-				Value:       "/path/to/your.key",
-				Usage:       "private key file path",
-				Destination: &remoteProxyFlags.privateKeyFile,
+				Name:        "cache-dir",
+				Value:       "certs",
+				Usage:       "directory to stores and retrieves previously-obtained certificates",
+				Destination: &remoteProxyFlags.certCacheDir,
 			},
 			&cli.StringFlag{
 				Name:        "static-reversed-url",
@@ -127,10 +128,10 @@ func main() {
 				Destination: &remoteProxyFlags.staticReversedUrl,
 			},
 			&cli.BoolFlag{
-				Name:        "eco-bandwidth-mode",
+				Name:        "anti-scraping",
 				Value:       true,
-				Usage:       "eco bandwidth mode",
-				Destination: &remoteProxyFlags.ecoBandwidthMode,
+				Usage:       "enable anti-scraping mode",
+				Destination: &remoteProxyFlags.antiScraping,
 			},
 			&cli.StringFlag{
 				Name:        "secret-key",
@@ -232,26 +233,40 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 }
 
 func remoteProxyServerCmdAction(_ *cli.Context) error {
-	var listener net.Listener
-	var err error
-
-	if listener, err = net.Listen("tcp", remoteProxyFlags.listenAddr); err != nil {
-		return errors.New("listen on remote proxy address error: " + err.Error())
-	}
-
 	remoteProxy := &remoteProxyServer{
-		ecoBandwidthMode:   remoteProxyFlags.ecoBandwidthMode,
+		antiScraping:       remoteProxyFlags.antiScraping,
 		secretKey:          remoteProxyFlags.secretKey,
 		staticReversedAddr: remoteProxyFlags.staticReversedUrl,
 	}
-	if remoteProxyFlags.certFile != "" && remoteProxyFlags.privateKeyFile != "" {
-		if err = http.ServeTLS(listener, remoteProxy, remoteProxyFlags.certFile, remoteProxyFlags.privateKeyFile); err != nil {
-			return errors.New("start HTTPS server error: " + err.Error())
-		}
-	} else {
-		if err = http.Serve(listener, remoteProxy); err != nil {
-			return errors.New("start HTTP server error: " + err.Error())
-		}
+
+	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {
+		return fmt.Errorf("create cert cache dir error: %s", err)
 	}
-	return nil
+
+	m := &autocert.Manager{
+		Cache:      autocert.DirCache(remoteProxyFlags.certCacheDir),
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist(remoteProxyFlags.domain),
+	}
+
+	errChan := make(chan error, 1)
+
+	go func() {
+		log.Println("Starting HTTP server on :80 for HTTP-01 challenges")
+		if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
+			errChan <- fmt.Errorf("start HTTP server on :80 for HTTP-01 challenges error: %v", err)
+		}
+	}()
+
+	go func() {
+		s := &http.Server{Addr: remoteProxyFlags.listenAddr, TLSConfig: m.TLSConfig(), Handler: remoteProxy}
+		defer s.Close()
+
+		log.Printf("Starting HTTPS server on %s", remoteProxyFlags.listenAddr)
+		if err := s.ListenAndServeTLS("", ""); err != nil {
+			errChan <- fmt.Errorf("start HTTPS server on %v error: %w", remoteProxyFlags.listenAddr, err)
+		}
+	}()
+
+	return <-errChan
 }

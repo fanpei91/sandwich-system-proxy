@@ -15,7 +15,7 @@ import (
 type remoteProxyServer struct {
 	secretKey          string
 	staticReversedAddr string
-	ecoBandwidthMode   bool
+	antiScraping       bool
 }
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -61,8 +61,8 @@ func (proxy *remoteProxyServer) serveAsStaticReversedProxy(rw http.ResponseWrite
 	req.URL.Scheme = u.Scheme
 	req.Host = ""
 
-	if proxy.ecoBandwidthMode {
-		rw = newEcoBandwidthResponseWriter(rw)
+	if proxy.antiScraping {
+		rw = newAntiScrapingResponseWriter(rw)
 	}
 
 	if proxy.isWebRobotRequest(req) {
@@ -80,30 +80,30 @@ func (proxy *remoteProxyServer) responseRobot(rw http.ResponseWriter) {
 	rw.Write([]byte("User-agent: *\nDisallow: /"))
 }
 
-type ecoBandwidthResponseWriter struct {
+type antiScrapingResponseWriter struct {
 	rw      http.ResponseWriter
 	limiter io.Writer
 }
 
-func newEcoBandwidthResponseWriter(rw http.ResponseWriter) *ecoBandwidthResponseWriter {
+func newAntiScrapingResponseWriter(rw http.ResponseWriter) *antiScrapingResponseWriter {
 	const defaultRate = 24 * 1024
 	const defaultCapacity = defaultRate * 2
 	bucket := ratelimit.NewBucketWithRate(defaultRate, defaultCapacity)
 	w := ratelimit.Writer(rw, bucket)
-	return &ecoBandwidthResponseWriter{
+	return &antiScrapingResponseWriter{
 		rw:      rw,
 		limiter: w,
 	}
 }
 
-func (r *ecoBandwidthResponseWriter) Header() http.Header {
+func (r *antiScrapingResponseWriter) Header() http.Header {
 	return r.rw.Header()
 }
 
-func (r *ecoBandwidthResponseWriter) Write(p []byte) (int, error) {
+func (r *antiScrapingResponseWriter) Write(p []byte) (int, error) {
 	return r.limiter.Write(p)
 }
 
-func (r *ecoBandwidthResponseWriter) WriteHeader(statusCode int) {
+func (r *antiScrapingResponseWriter) WriteHeader(statusCode int) {
 	r.rw.WriteHeader(statusCode)
 }
