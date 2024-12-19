@@ -206,6 +206,3 @@ func (d *smartDNS) do(host string) {
 	}
 	resolver.waiters = nil
 }
-
-//go:linkname goLookupIPFiles net.goLookupIPFiles
-func goLookupIPFiles(name string) (addrs []net.IPAddr)

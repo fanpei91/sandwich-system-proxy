@@ -4,7 +4,6 @@ import (
 	"log"
 	"testing"
 )
-import _ "unsafe"
 
 func TestLookupStaticHost(t *testing.T) {
 	log.Println(goLookupIPFiles("youtube.com"))
