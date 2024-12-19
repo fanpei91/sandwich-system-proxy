@@ -116,7 +116,7 @@ func main() {
 				Destination: &remoteProxyFlags.domain,
 			},
 			&cli.StringFlag{
-				Name:        "cache-dir",
+				Name:        "cert-cache-dir",
 				Value:       "certs",
 				Usage:       "directory to stores and retrieves previously-obtained certificates",
 				Destination: &remoteProxyFlags.certCacheDir,
