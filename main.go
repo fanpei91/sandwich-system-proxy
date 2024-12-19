@@ -182,13 +182,13 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		},
 	}
 
-	dns := newSmartDNS(
-		(&dnsOverHostsFile{}).lookup,
-		(&dnsOverHTTPS{
+	dns := newCachedDNS(
+		&dnsOverHostsFile{},
+		&dnsOverHTTPS{
 			provider:  localProxyFlags.dnsOverHttpsProvider,
 			staticTTL: time.Duration(localProxyFlags.staticDnsTTLInSeconds) * time.Second,
-		}).lookup,
-		(&dnsOverUDP{}).lookup,
+		},
+		&dnsOverUDP{},
 	)
 
 	localProxy := &localProxyServer{

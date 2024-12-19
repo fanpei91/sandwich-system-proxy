@@ -126,21 +126,21 @@ func (d *dnsOverHTTPS) lookup(host string) (ip net.IP, expriedAt time.Time) {
 	return ip, expriedAt
 }
 
-type smartDNS struct {
+type cachedDNS struct {
 	sync.RWMutex
-	lookups []func(host string) (net.IP, time.Time)
-	cache   *lru.Cache
+	backends []dns
+	cache    *lru.Cache
 }
 
-func newSmartDNS(lookups ...func(host string) (net.IP, time.Time)) *smartDNS {
-	d := &smartDNS{
+func newCachedDNS(backends ...dns) *cachedDNS {
+	d := &cachedDNS{
 		cache: lru.New(2 << 15),
 	}
-	d.lookups = append(d.lookups, lookups...)
+	d.backends = append(d.backends, backends...)
 	return d
 }
 
-func (d *smartDNS) lookup(host string) (ip net.IP, expriedAt time.Time) {
+func (d *cachedDNS) lookup(host string) (ip net.IP, expriedAt time.Time) {
 	d.Lock()
 
 	cached, ok := d.cache.Get(host)
@@ -180,12 +180,12 @@ func (d *smartDNS) lookup(host string) (ip net.IP, expriedAt time.Time) {
 	}
 }
 
-func (d *smartDNS) do(host string) {
+func (d *cachedDNS) do(host string) {
 	var ip net.IP
 	var expriedAt = time.Now()
 
-	for _, lookup := range d.lookups {
-		ip, expriedAt = lookup(host)
+	for _, backend := range d.backends {
+		ip, expriedAt = backend.lookup(host)
 		if ip != nil {
 			break
 		}
