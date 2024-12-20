@@ -7,7 +7,7 @@ sandwich-system-proxy 是一个傻瓜化、实现简单、伪装强、安全、�
 ```bash
 ./sandwich-system-proxy start-local-proxy-server \
  --listen-addr=:1186 \
- --remote-proxy-addr=https://<youdomain.com>:443 \
+ --remote-proxy-addr=https://yourdomain.com \
  --secret-key=<your secret key>
 ```
 
@@ -15,10 +15,10 @@ sandwich-system-proxy 是一个傻瓜化、实现简单、伪装强、安全、�
 
 # 启动远程代理服务
 
-sandwich-system-proxy 会自动从 Let's Encrypt 申请、更新证书，为了 [HTTP-01 challenges](https://letsencrypt.org/docs/challenge-types/#http-01-challenge)，需要保证 80 端口可监听。
+sandwich-system-proxy 会自动从 Let's Encrypt 申请、更新证书，为了使用 [TLS-ALPN-01](https://letsencrypt.org/docs/challenge-types/#tls-alpn-01) 验证，需要保证 443 端口可使用，并且必须指定 --domain 参数。
 
 ```bash
 ./sandwich-system-proxy start-remote-proxy-server \
- --listen-addr=:443 \
+ --domain=yourdomain.com \
  --secret-key=<your secret key>
 ```

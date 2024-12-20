@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"log"
 	"net"
@@ -30,7 +31,6 @@ type LocalProxyFlags struct {
 }
 
 type RemoteProxyFlags struct {
-	listenAddr             string
 	domain                 string
 	certCacheDir           string
 	staticReversedUrl      string
@@ -59,7 +59,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:        "remote-proxy-addr",
-				Value:       "https://yourdomain.com:443",
+				Value:       "https://yourdomain.com",
 				Usage:       "remote proxy address",
 				Destination: &localProxyFlags.remoteProxyAddr,
 			},
@@ -104,14 +104,8 @@ func main() {
 		Usage: "Start remote proxy server",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:        "listen-addr",
-				Value:       ":443",
-				Usage:       "listen address",
-				Destination: &remoteProxyFlags.listenAddr,
-			},
-			&cli.StringFlag{
 				Name:        "domain",
-				Value:       "www.example.com",
+				Value:       "yourdomain.com",
 				Usage:       "domain to access to certificates from Let's Encrypt",
 				Destination: &remoteProxyFlags.domain,
 			},
@@ -240,7 +234,7 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 	}
 
 	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {
-		return fmt.Errorf("create cert cache dir error: %s", err)
+		return fmt.Errorf("create cert cache dir %s error: %v", remoteProxyFlags.certCacheDir, err)
 	}
 
 	m := &autocert.Manager{
@@ -249,24 +243,19 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		HostPolicy: autocert.HostWhitelist(remoteProxyFlags.domain),
 	}
 
-	errChan := make(chan error, 1)
+	tlsConfig := &tls.Config{
+		GetCertificate: m.GetCertificate,
+		NextProtos: []string{
+			acme.ALPNProto,
+		},
+	}
 
-	go func() {
-		log.Println("Starting HTTP server on :80 for HTTP-01 challenges")
-		if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
-			errChan <- fmt.Errorf("start HTTP server on :80 for HTTP-01 challenges error: %v", err)
-		}
-	}()
+	s := &http.Server{Addr: ":443", TLSConfig: tlsConfig, Handler: remoteProxy}
+	defer s.Close()
 
-	go func() {
-		s := &http.Server{Addr: remoteProxyFlags.listenAddr, TLSConfig: m.TLSConfig(), Handler: remoteProxy}
-		defer s.Close()
-
-		log.Printf("Starting HTTPS server on %s", remoteProxyFlags.listenAddr)
-		if err := s.ListenAndServeTLS("", ""); err != nil {
-			errChan <- fmt.Errorf("start HTTPS server on %v error: %w", remoteProxyFlags.listenAddr, err)
-		}
-	}()
-
-	return <-errChan
+	log.Println("Starting HTTPS server on :443")
+	if err := s.ListenAndServeTLS("", ""); err != nil {
+		return fmt.Errorf("start HTTPS server on :443 error: %v", err)
+	}
+	return nil
 }
