@@ -20,14 +20,14 @@ type remoteProxyServer struct {
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if req.Header.Get(headerSecret) == proxy.secretKey {
-		proxy.serveAsDynamicReversedProxy(rw, req)
+		proxy.forwardToTarget(rw, req)
 		return
 	}
 
-	proxy.serveAsStaticReversedProxy(rw, req)
+	proxy.serveAsWebsite(rw, req)
 }
 
-func (proxy *remoteProxyServer) serveAsDynamicReversedProxy(rw http.ResponseWriter, req *http.Request) {
+func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *http.Request) {
 	req.Header.Del(headerSecret)
 	targetAddr := appendPort(req.Host, req.URL.Scheme)
 
@@ -49,7 +49,7 @@ func (proxy *remoteProxyServer) serveAsDynamicReversedProxy(rw http.ResponseWrit
 	transfer(target, localProxy)
 }
 
-func (proxy *remoteProxyServer) serveAsStaticReversedProxy(rw http.ResponseWriter, req *http.Request) {
+func (proxy *remoteProxyServer) serveAsWebsite(rw http.ResponseWriter, req *http.Request) {
 	var u *url.URL
 	var err error
 	if u, err = url.Parse(proxy.staticReversedAddr); err != nil {
@@ -70,6 +70,7 @@ func (proxy *remoteProxyServer) serveAsStaticReversedProxy(rw http.ResponseWrite
 		rw = newRatelimitResponseWriter(rw)
 	}
 
+	// 懒得为伪装网站提供内容，所以就扮演一个网站代理，把 proxy.staticReversedAddr 的内容返回给浏览者
 	httputil.NewSingleHostReverseProxy(u).ServeHTTP(rw, req)
 }
 

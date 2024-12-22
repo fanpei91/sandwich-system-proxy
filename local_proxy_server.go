@@ -40,7 +40,7 @@ func (proxy *localProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Reque
 	host, port, _ := net.SplitHostPort(targetAddr)
 
 	if proxy.forceForwardToRemoteProxy {
-		proxy.remote(rw, req)
+		proxy.forwardToRemoteProxy(rw, req)
 		return
 	}
 
@@ -56,15 +56,15 @@ func (proxy *localProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Reque
 	req.URL.Host = targetIP.String() + ":" + port
 	if proxy.chinaIPRangeDB.contains(targetIP) || privateIPRange.contains(targetIP) {
 		log.Println(fmt.Sprintf("origin <-> local <-> %s(%s)", host, targetIP))
-		proxy.direct(rw, req, targetAddr)
+		proxy.forwardToTarget(rw, req, targetAddr)
 		return
 	}
 
 	log.Println(fmt.Sprintf("origin <-> local <-> remote <-> %s(%s)", host, targetIP))
-	proxy.remote(rw, req)
+	proxy.forwardToRemoteProxy(rw, req)
 }
 
-func (proxy *localProxyServer) direct(rw http.ResponseWriter, req *http.Request, targetAddr string) {
+func (proxy *localProxyServer) forwardToTarget(rw http.ResponseWriter, req *http.Request, targetAddr string) {
 	client, _, _ := rw.(http.Hijacker).Hijack()
 	target, err := net.Dial("tcp", targetAddr)
 	if err != nil {
@@ -86,7 +86,7 @@ func (proxy *localProxyServer) direct(rw http.ResponseWriter, req *http.Request,
 	transfer(target, client)
 }
 
-func (proxy *localProxyServer) remote(rw http.ResponseWriter, req *http.Request) {
+func (proxy *localProxyServer) forwardToRemoteProxy(rw http.ResponseWriter, req *http.Request) {
 	client, _, _ := rw.(http.Hijacker).Hijack()
 	var remoteProxy net.Conn
 	var err error
