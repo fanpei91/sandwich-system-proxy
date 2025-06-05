@@ -1,5 +1,5 @@
-//go:build !darwin
-// +build !darwin
+//go:build !windows && !darwin
+// +build !windows,!darwin
 
 package main
 
