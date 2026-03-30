@@ -117,7 +117,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:        "static-reversed-url",
-				Value:       "https://mirror.pilotfiber.com/ubuntu/",
+				Value:       "https://mirrors.teamcloud.am",
 				Usage:       "static reversed url",
 				Destination: &remoteProxyFlags.staticReversedUrl,
 			},
