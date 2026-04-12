@@ -1,6 +1,6 @@
 # sandwich-system-proxy
 
-sandwich-system-proxy 是一个傻瓜化、实现简单、伪装强、安全、基于 HTTPS 协议、使用 IP 段而不是主机规则表的智能代理。
+sandwich-system-proxy 是一个使用傻瓜化、实现简单粗暴、反深度检测、基于 HTTPS 协议、使用 IP 段分流的科学上网工具。
 
 # 启动本地代理服务
 
