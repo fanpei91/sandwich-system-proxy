@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +13,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/robfig/cron/v3"
 	"github.com/urfave/cli/v2"
@@ -32,6 +33,7 @@ type LocalProxyFlags struct {
 
 type RemoteProxyFlags struct {
 	domain                 string
+	whitelist              cli.StringSlice
 	certCacheDir           string
 	staticReversedUrl      string
 	enableWebsiteRatelimit bool
@@ -108,6 +110,12 @@ func main() {
 				Value:       "yourdomain.com",
 				Usage:       "domain to access to certificates from Let's Encrypt",
 				Destination: &remoteProxyFlags.domain,
+			},
+			&cli.StringSliceFlag{
+				Name:        "whitelist",
+				Value:       nil,
+				Usage:       "whitelist to allowed Let's Encrypt to verify",
+				Destination: &remoteProxyFlags.whitelist,
 			},
 			&cli.StringFlag{
 				Name:        "cert-cache-dir",
@@ -239,10 +247,13 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		return fmt.Errorf("create cert cache dir %s error: %v", remoteProxyFlags.certCacheDir, err)
 	}
 
+	whitelist := make([]string, 0, 1+len(remoteProxyFlags.whitelist.Value()))
+	whitelist = append(whitelist, remoteProxyFlags.domain)
+	whitelist = append(whitelist, remoteProxyFlags.whitelist.Value()...)
 	m := &autocert.Manager{
 		Cache:      autocert.DirCache(remoteProxyFlags.certCacheDir),
 		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(remoteProxyFlags.domain),
+		HostPolicy: autocert.HostWhitelist(whitelist...),
 	}
 
 	tlsConfig := &tls.Config{
