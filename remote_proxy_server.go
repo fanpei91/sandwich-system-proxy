@@ -16,6 +16,7 @@ type remoteProxyServer struct {
 	secretKey              string
 	staticReversedAddr     string
 	enableWebsiteRatelimit bool
+	fragment               fragmentOptions
 }
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -46,7 +47,7 @@ func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *htt
 	}
 
 	go transfer(localProxy, target)
-	transfer(target, localProxy)
+	copyClientToTarget(target, localProxy, proxy.fragment)
 }
 
 func (proxy *remoteProxyServer) serveAsWebsite(rw http.ResponseWriter, req *http.Request) {

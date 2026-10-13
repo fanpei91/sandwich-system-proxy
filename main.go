@@ -36,6 +36,11 @@ type RemoteProxyFlags struct {
 	staticReversedUrl      string
 	enableWebsiteRatelimit bool
 	secretKey              string
+
+	enableTLSFragment    bool
+	tlsFragmentCount     int
+	tlsFragmentFirstLen  int
+	tlsFragmentDelayInMs int
 }
 
 var (
@@ -132,6 +137,31 @@ func main() {
 				Value:       "<your secret key>",
 				Usage:       "secret key",
 				Destination: &remoteProxyFlags.secretKey,
+			},
+
+			&cli.BoolFlag{
+				Name:        "enable-tls-fragment",
+				Value:       false,
+				Usage:       "fragment the TLS ClientHello into multiple TCP segments to bypass SNI filtering",
+				Destination: &remoteProxyFlags.enableTLSFragment,
+			},
+			&cli.IntFlag{
+				Name:        "tls-fragment-count",
+				Value:       2,
+				Usage:       "number of fragments the first TLS record is split into (>=2)",
+				Destination: &remoteProxyFlags.tlsFragmentCount,
+			},
+			&cli.IntFlag{
+				Name:        "tls-fragment-first-len",
+				Value:       5,
+				Usage:       "byte length of the first fragment (record header only by default)",
+				Destination: &remoteProxyFlags.tlsFragmentFirstLen,
+			},
+			&cli.IntFlag{
+				Name:        "tls-fragment-delay-ms",
+				Value:       5,
+				Usage:       "delay in milliseconds between fragments",
+				Destination: &remoteProxyFlags.tlsFragmentDelayInMs,
 			},
 		},
 		Action: remoteProxyServerCmdAction,
@@ -233,6 +263,12 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		enableWebsiteRatelimit: remoteProxyFlags.enableWebsiteRatelimit,
 		secretKey:              remoteProxyFlags.secretKey,
 		staticReversedAddr:     remoteProxyFlags.staticReversedUrl,
+		fragment: fragmentOptions{
+			enabled:          remoteProxyFlags.enableTLSFragment,
+			count:            remoteProxyFlags.tlsFragmentCount,
+			firstFragmentLen: remoteProxyFlags.tlsFragmentFirstLen,
+			delay:            time.Duration(remoteProxyFlags.tlsFragmentDelayInMs) * time.Millisecond,
+		},
 	}
 
 	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {
