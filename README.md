@@ -23,18 +23,16 @@ sandwich-system-proxy 会自动从 Let's Encrypt 申请、更新证书，为了�
  --secret-key=<your secret key>
 ```
 
-# TLS 分片（绕过 SNI 过滤）
+# 直连被 RST 时回退到 SOCKS5
 
-remote server 连往 target 的出口链路上若有 SNI 过滤，可开启分片：把首个 TLS record（ClientHello，其中含 SNI）
-拆成多个 TCP 段发送，以规避浅层 SNI 检查。该功能默认关闭，相关参数：
+remote server 直连 target 时，若出口设备在 TLS 握手阶段返回 RST，会断开本次连接并把该 target 记入内存
+（进程内永久有效，重启清空），之后该 target 的连接改走 `--outbound-socks5-proxy` 指定的 SOCKS5 代理。客户端
+（浏览器等）会自动重试，因此首次访问会多一次失败重试。
+
+典型场景是机房对出向 HTTPS 做 SNI 过滤：设备读到 ClientHello 里的被禁 SNI 后直接返回 RST，导致直连握手失败。
+此时把出口指向不受该过滤影响的 SOCKS5 代理（例如本机运行 Cloudflare WARP 提供的 SOCKS5）即可绕过。
 
 ```bash
- --enable-tls-fragment=true \   # 是否启用分片，默认 false
- --tls-fragment-count=2 \       # ClientHello 拆成几段，默认 2
- --tls-fragment-first-len=5 \   # 第一段的字节数，默认 5（仅 record 头，不含 SNI）
- --tls-fragment-delay-ms=5      # 段间延迟（毫秒），默认 5
+ --outbound-socks5-proxy=socks5://user:pass@127.0.0.1:40000   # 兜底 SOCKS5，支持可选认证，默认空（不启用）
 ```
-
-若目标网络会对多个 TCP 段做重组后再检测，可调大 `--tls-fragment-count`（如 3~4）把 ClientHello 切得更碎，
-代价是握手略微变慢。分片只作用于隧道内 client → target 方向的第一个记录，后续数据原样转发。
 

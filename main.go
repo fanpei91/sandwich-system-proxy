@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +13,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/robfig/cron/v3"
 	"github.com/urfave/cli/v2"
@@ -36,11 +37,7 @@ type RemoteProxyFlags struct {
 	staticReversedUrl      string
 	enableWebsiteRatelimit bool
 	secretKey              string
-
-	enableTLSFragment    bool
-	tlsFragmentCount     int
-	tlsFragmentFirstLen  int
-	tlsFragmentDelayInMs int
+	outboundProxy          string
 }
 
 var (
@@ -138,30 +135,11 @@ func main() {
 				Usage:       "secret key",
 				Destination: &remoteProxyFlags.secretKey,
 			},
-
-			&cli.BoolFlag{
-				Name:        "enable-tls-fragment",
-				Value:       false,
-				Usage:       "fragment the TLS ClientHello into multiple TCP segments to bypass SNI filtering",
-				Destination: &remoteProxyFlags.enableTLSFragment,
-			},
-			&cli.IntFlag{
-				Name:        "tls-fragment-count",
-				Value:       2,
-				Usage:       "number of fragments the first TLS record is split into (>=2)",
-				Destination: &remoteProxyFlags.tlsFragmentCount,
-			},
-			&cli.IntFlag{
-				Name:        "tls-fragment-first-len",
-				Value:       5,
-				Usage:       "byte length of the first fragment (record header only by default)",
-				Destination: &remoteProxyFlags.tlsFragmentFirstLen,
-			},
-			&cli.IntFlag{
-				Name:        "tls-fragment-delay-ms",
-				Value:       5,
-				Usage:       "delay in milliseconds between fragments",
-				Destination: &remoteProxyFlags.tlsFragmentDelayInMs,
+			&cli.StringFlag{
+				Name:        "outbound-socks5-proxy",
+				Value:       "",
+				Usage:       "SOCKS5 proxy used after a direct connection is reset during TLS handshake (e.g. socks5://user:pass@127.0.0.1:40000 | socks5://127.0.0.1:40000)",
+				Destination: &remoteProxyFlags.outboundProxy,
 			},
 		},
 		Action: remoteProxyServerCmdAction,
@@ -259,16 +237,17 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 }
 
 func remoteProxyServerCmdAction(_ *cli.Context) error {
+	outboundProxy, err := parseOutboundProxy(remoteProxyFlags.outboundProxy)
+	if err != nil {
+		return fmt.Errorf("parse outbound SOCKS5 proxy error: %v", err)
+	}
+
 	remoteProxy := &remoteProxyServer{
 		enableWebsiteRatelimit: remoteProxyFlags.enableWebsiteRatelimit,
 		secretKey:              remoteProxyFlags.secretKey,
 		staticReversedAddr:     remoteProxyFlags.staticReversedUrl,
-		fragment: fragmentOptions{
-			enabled:          remoteProxyFlags.enableTLSFragment,
-			count:            remoteProxyFlags.tlsFragmentCount,
-			firstFragmentLen: remoteProxyFlags.tlsFragmentFirstLen,
-			delay:            time.Duration(remoteProxyFlags.tlsFragmentDelayInMs) * time.Millisecond,
-		},
+		outboundProxy:          outboundProxy,
+		fallbackHosts:          newFallbackHosts(),
 	}
 
 	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {

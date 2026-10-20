@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +17,8 @@ type remoteProxyServer struct {
 	secretKey              string
 	staticReversedAddr     string
 	enableWebsiteRatelimit bool
-	fragment               fragmentOptions
+	outboundProxy          *socks5ProxyConfig
+	fallbackHosts          *fallbackHosts
 }
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -32,22 +34,50 @@ func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *htt
 	req.Header.Del(headerSecret)
 	targetAddr := appendPort(req.Host, req.URL.Scheme)
 
-	target, err := net.Dial("tcp", targetAddr)
+	target, err := proxy.dialTarget(targetAddr)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
-	localProxy, _, _ := rw.(http.Hijacker).Hijack()
+	localProxy, buffered, _ := rw.(http.Hijacker).Hijack()
 
-	if req.Method == http.MethodConnect {
+	isConnect := req.Method == http.MethodConnect
+	if isConnect {
 		localProxy.Write([]byte(fmt.Sprintf("%s 200 OK\r\n\r\n", req.Proto)))
 	} else {
 		req.Write(target)
 	}
 
-	go transfer(localProxy, target)
-	copyClientToTarget(target, localProxy, proxy.fragment)
+	client := &hijackedClientConn{Reader: buffered.Reader, conn: localProxy}
+
+	go func() {
+		reader := &resetTrackingReader{r: target}
+		n, _ := io.Copy(localProxy, reader)
+		if isConnect && n == 0 && reader.reset {
+			proxy.fallbackHosts.add(targetAddr)
+		}
+		target.Close()
+		localProxy.Close()
+	}()
+
+	transfer(target, client)
+}
+
+func (proxy *remoteProxyServer) dialTarget(targetAddr string) (net.Conn, error) {
+	if proxy.outboundProxy != nil && proxy.fallbackHosts.contains(targetAddr) {
+		return dialSOCKS5(proxy.outboundProxy, targetAddr)
+	}
+	return net.Dial("tcp", targetAddr)
+}
+
+type hijackedClientConn struct {
+	*bufio.Reader
+	conn net.Conn
+}
+
+func (c *hijackedClientConn) Close() error {
+	return c.conn.Close()
 }
 
 func (proxy *remoteProxyServer) serveAsWebsite(rw http.ResponseWriter, req *http.Request) {
