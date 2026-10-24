@@ -32,12 +32,14 @@ type LocalProxyFlags struct {
 }
 
 type RemoteProxyFlags struct {
-	domain                 string
-	certCacheDir           string
-	staticReversedUrl      string
-	enableWebsiteRatelimit bool
-	secretKey              string
-	outboundProxy          string
+	domain                            string
+	certCacheDir                      string
+	staticReversedUrl                 string
+	enableWebsiteRatelimit            bool
+	secretKey                         string
+	outboundProxy                     string
+	outboundProxyMode                 string
+	outboundProxyFallbackTTLInSeconds int
 }
 
 var (
@@ -138,8 +140,20 @@ func main() {
 			&cli.StringFlag{
 				Name:        "outbound-socks5-proxy",
 				Value:       "",
-				Usage:       "SOCKS5 proxy used after a direct connection is reset during TLS handshake (e.g. socks5://user:pass@127.0.0.1:40000 | socks5://127.0.0.1:40000)",
+				Usage:       "SOCKS5 proxy used to reach targets (e.g. socks5://user:pass@127.0.0.1:40000 | socks5://127.0.0.1:40000)",
 				Destination: &remoteProxyFlags.outboundProxy,
+			},
+			&cli.StringFlag{
+				Name:        "outbound-proxy-mode",
+				Value:       string(outboundProxyModeFallback),
+				Usage:       `how to use the outbound SOCKS5 proxy: "fallback" only after a direct connection is reset, "always" forward every request`,
+				Destination: &remoteProxyFlags.outboundProxyMode,
+			},
+			&cli.IntFlag{
+				Name:        "outbound-proxy-fallback-ttl-seconds",
+				Value:       86400,
+				Usage:       "TTL in seconds for hosts that fall back to the outbound SOCKS5 proxy",
+				Destination: &remoteProxyFlags.outboundProxyFallbackTTLInSeconds,
 			},
 		},
 		Action: remoteProxyServerCmdAction,
@@ -242,12 +256,25 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		return fmt.Errorf("parse outbound SOCKS5 proxy error: %v", err)
 	}
 
+	outboundProxyMode, err := parseOutboundProxyMode(remoteProxyFlags.outboundProxyMode)
+	if err != nil {
+		return fmt.Errorf("parse outbound proxy mode error: %v", err)
+	}
+	if outboundProxyMode == outboundProxyModeAlways && outboundProxy == nil {
+		return errors.New("outbound proxy mode \"always\" requires --outbound-socks5-proxy")
+	}
+
+	if remoteProxyFlags.outboundProxyFallbackTTLInSeconds <= 0 {
+		return errors.New("outbound proxy fallback TTL must be greater than 0")
+	}
+
 	remoteProxy := &remoteProxyServer{
 		enableWebsiteRatelimit: remoteProxyFlags.enableWebsiteRatelimit,
 		secretKey:              remoteProxyFlags.secretKey,
 		staticReversedAddr:     remoteProxyFlags.staticReversedUrl,
 		outboundProxy:          outboundProxy,
-		fallbackHosts:          newFallbackHosts(),
+		outboundProxyMode:      outboundProxyMode,
+		fallbackHosts:          newFallbackHosts(time.Duration(remoteProxyFlags.outboundProxyFallbackTTLInSeconds) * time.Second),
 	}
 
 	if err := os.MkdirAll(remoteProxyFlags.certCacheDir, 0700); err != nil {

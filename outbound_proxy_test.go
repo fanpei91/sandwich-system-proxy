@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type errReader struct {
@@ -18,7 +19,7 @@ func (r errReader) Read([]byte) (int, error) {
 }
 
 func TestFallbackSet(t *testing.T) {
-	set := newFallbackHosts()
+	set := newFallbackHosts(time.Hour)
 	if set.contains("example.com:443") {
 		t.Fatal("unexpected host in empty set")
 	}
@@ -26,6 +27,23 @@ func TestFallbackSet(t *testing.T) {
 	set.add("example.com:443")
 	if !set.contains("example.com:443") {
 		t.Fatal("host not recorded")
+	}
+}
+
+func TestFallbackSetExpires(t *testing.T) {
+	set := newFallbackHosts(time.Millisecond)
+	set.add("example.com:443")
+	time.Sleep(5 * time.Millisecond)
+
+	if set.contains("example.com:443") {
+		t.Fatal("expected host to expire")
+	}
+
+	set.mu.RLock()
+	_, ok := set.hosts["example.com:443"]
+	set.mu.RUnlock()
+	if ok {
+		t.Fatal("expected expired host to be removed")
 	}
 }
 
@@ -70,6 +88,36 @@ func TestParseOutboundProxy(t *testing.T) {
 		}
 		if got.auth == nil || got.auth.User != c.wantUser || got.auth.Password != c.wantPass {
 			t.Fatalf("%s: auth = %+v, want %q/%q", c.name, got.auth, c.wantUser, c.wantPass)
+		}
+	}
+}
+
+func TestParseOutboundProxyMode(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    outboundProxyMode
+		wantErr bool
+	}{
+		{"", outboundProxyModeFallback, false},
+		{"fallback", outboundProxyModeFallback, false},
+		{"always", outboundProxyModeAlways, false},
+		{" always ", outboundProxyModeAlways, false},
+		{"never", "", true},
+	}
+
+	for _, c := range cases {
+		got, err := parseOutboundProxyMode(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("%q: expected error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Fatalf("%q: got %q, want %q", c.in, got, c.want)
 		}
 	}
 }

@@ -15,26 +15,58 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-type fallbackHosts struct {
-	mu    sync.RWMutex
-	hosts map[string]struct{}
+type outboundProxyMode string
+
+const (
+	outboundProxyModeFallback outboundProxyMode = "fallback"
+	outboundProxyModeAlways   outboundProxyMode = "always"
+)
+
+func parseOutboundProxyMode(raw string) (outboundProxyMode, error) {
+	switch outboundProxyMode(strings.TrimSpace(raw)) {
+	case "", outboundProxyModeFallback:
+		return outboundProxyModeFallback, nil
+	case outboundProxyModeAlways:
+		return outboundProxyModeAlways, nil
+	default:
+		return "", fmt.Errorf("unsupported outbound proxy mode %q (expected %q or %q)", raw, outboundProxyModeFallback, outboundProxyModeAlways)
+	}
 }
 
-func newFallbackHosts() *fallbackHosts {
-	return &fallbackHosts{hosts: make(map[string]struct{})}
+type fallbackHosts struct {
+	mu    sync.RWMutex
+	ttl   time.Duration
+	hosts map[string]time.Time
+}
+
+func newFallbackHosts(ttl time.Duration) *fallbackHosts {
+	return &fallbackHosts{
+		ttl:   ttl,
+		hosts: make(map[string]time.Time),
+	}
 }
 
 func (f *fallbackHosts) add(addr string) {
 	f.mu.Lock()
-	f.hosts[addr] = struct{}{}
+	f.hosts[addr] = time.Now().Add(f.ttl)
 	f.mu.Unlock()
 }
 
 func (f *fallbackHosts) contains(addr string) bool {
 	f.mu.RLock()
-	_, ok := f.hosts[addr]
+	expiresAt, ok := f.hosts[addr]
 	f.mu.RUnlock()
-	return ok
+	if !ok {
+		return false
+	}
+	if time.Now().Before(expiresAt) {
+		return true
+	}
+
+	f.mu.Lock()
+	delete(f.hosts, addr)
+	f.mu.Unlock()
+	return false
 }
 
 type resetTrackingReader struct {

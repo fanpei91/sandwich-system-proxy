@@ -18,6 +18,7 @@ type remoteProxyServer struct {
 	staticReversedAddr     string
 	enableWebsiteRatelimit bool
 	outboundProxy          *socks5ProxyConfig
+	outboundProxyMode      outboundProxyMode
 	fallbackHosts          *fallbackHosts
 }
 
@@ -65,8 +66,10 @@ func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *htt
 }
 
 func (proxy *remoteProxyServer) dialTarget(targetAddr string) (net.Conn, error) {
-	if proxy.outboundProxy != nil && proxy.fallbackHosts.contains(targetAddr) {
-		return dialSOCKS5(proxy.outboundProxy, targetAddr)
+	if proxy.outboundProxy != nil {
+		if proxy.outboundProxyMode == outboundProxyModeAlways || proxy.fallbackHosts.contains(targetAddr) {
+			return dialSOCKS5(proxy.outboundProxy, targetAddr)
+		}
 	}
 	return net.Dial("tcp", targetAddr)
 }
