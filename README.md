@@ -11,7 +11,7 @@ sandwich-system-proxy 是一个使用傻瓜化、实现简单粗暴、反深度�
  --secret-key=<your secret key>
 ```
 
-目前只支持 macOS，Windows 自动设置系统代理地址为 127.0.0.1:1186（HTTP/HTTPS 与 SOCKS 一并指向同一端口），其他操作系统的系统代理地址需自行手动设置。
+目前只支持 macOS，Windows 自动设置系统代理地址为 127.0.0.1:1186，http/https、socks5/socks5h 同时被设置，多协议同一端口。其他操作系统的系统代理地址需自行手动设置。
 
 
 # 启动远程代理服务
