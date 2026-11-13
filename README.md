@@ -16,10 +16,10 @@ sandwich-system-proxy 是一个使用傻瓜化、实现简单粗暴、反深度�
 
 # 启动远程代理服务
 
-sandwich-system-proxy 会自动从 Let's Encrypt 申请、更新证书，为了使用 [TLS-ALPN-01](https://letsencrypt.org/docs/challenge-types/#tls-alpn-01) 验证，需要保证 443 端口可使用，并且必须指定 --domain 参数。
-
 ```bash
 ./sandwich-system-proxy start-remote-proxy-server \
  --domain=yourdomain.com \
  --secret-key=<your secret key>
 ```
+
+sandwich-system-proxy 会自动从 Let's Encrypt 申请、更新证书，为了使用 [TLS-ALPN-01](https://letsencrypt.org/docs/challenge-types/#tls-alpn-01) 验证，需要保证 443 端口可使用，并且必须指定 --domain 参数。
