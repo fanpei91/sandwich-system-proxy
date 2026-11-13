@@ -31,6 +31,11 @@ func setSysProxy(listenAddr string) error {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return errors.New(string(out) + err.Error())
 		}
+
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsocksfirewallproxy '%s' %s %s", networkservice, host, port))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return errors.New(string(out) + err.Error())
+		}
 	}
 
 	return nil
@@ -45,6 +50,11 @@ func unsetSysProxy() error {
 		}
 
 		cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setwebproxystate '%s' %s", networkservice, "off"))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return errors.New(string(out) + err.Error())
+		}
+
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("networksetup -setsocksfirewallproxystate '%s' %s", networkservice, "off"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return errors.New(string(out) + err.Error())
 		}

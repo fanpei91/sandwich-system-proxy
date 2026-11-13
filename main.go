@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -216,6 +217,14 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		dns:                       dns,
 	}
 
+	listenHost, _, err := net.SplitHostPort(localProxyFlags.listenAddr)
+	if err == nil {
+		listenIP := net.ParseIP(strings.TrimSpace(listenHost))
+		if strings.TrimSpace(listenHost) == "" || (listenIP != nil && !listenIP.IsLoopback()) {
+			log.Printf("warning: local proxy is listening on a non-loopback address (%s), both HTTP and SOCKS5 are exposed without authentication", localProxyFlags.listenAddr)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -243,6 +252,7 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		os.Exit(0)
 	}()
 
+	listener = &sniffingListener{Listener: listener, handleSOCKS5: localProxy.serveSOCKS5}
 	if err = http.Serve(listener, localProxy); err != nil {
 		return errors.New("start HTTP server error: " + err.Error())
 	}

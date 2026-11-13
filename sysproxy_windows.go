@@ -20,7 +20,7 @@ func setSysProxy(listenAddr string) error {
 		host = "127.0.0.1"
 	}
 
-	command := fmt.Sprintf(`Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -name ProxyServer -Value "http://%s:%s"`, host, port)
+	command := fmt.Sprintf(`Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -name ProxyServer -Value "http=%s:%s;https=%s:%s;socks=%s:%s"`, host, port, host, port, host, port)
 	cmd := exec.Command("powershell", command)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(string(out) + err.Error())
