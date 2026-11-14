@@ -8,6 +8,7 @@ sandwich-system-proxy 是一个使用傻瓜化、实现简单粗暴、反深度�
 ./sandwich-system-proxy start-local-proxy-server \
  --listen-addr=:1186 \
  --remote-proxy-addr=https://yourdomain.com \
+ --remote-pool-size=2 \
  --secret-key=<your secret key>
 ```
 

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,10 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-)
-
-const (
-	headerSecret = "Misha-Secret"
+	"time"
 )
 
 type localProxyServer struct {
@@ -28,6 +24,7 @@ type localProxyServer struct {
 	forceForwardToRemoteProxy bool
 	client                    *http.Client
 	dns                       dnsResovler
+	tunnel                    *tunnelClient
 }
 
 func (proxy *localProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -46,7 +43,6 @@ func (proxy *localProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	req.URL.Host = net.JoinHostPort(targetIP.String(), port)
 	if !proxy.useRemoteProxy(targetIP) {
 		log.Println(fmt.Sprintf("origin <-> local <-> %s(%s)", host, targetIP))
 		proxy.forwardToTarget(rw, req, net.JoinHostPort(targetIP.String(), port))
@@ -79,10 +75,16 @@ func (proxy *localProxyServer) useRemoteProxy(targetIP net.IP) bool {
 }
 
 func (proxy *localProxyServer) forwardToTarget(rw http.ResponseWriter, req *http.Request, targetAddr string) {
-	client, _, _ := rw.(http.Hijacker).Hijack()
-	target, err := net.Dial("tcp", targetAddr)
+	client, buffered, err := rw.(http.Hijacker).Hijack()
 	if err != nil {
-		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
+		log.Printf("hijack failed for %s %s: %v", req.Method, req.Host, err)
+		return
+	}
+	target, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	if err != nil {
+		log.Printf("dial target %s error: %v", targetAddr, err)
+		fmt.Fprintf(client, "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n503 dial target %s: %v\r\n", targetAddr, err)
+		_ = client.Close()
 		return
 	}
 
@@ -97,30 +99,93 @@ func (proxy *localProxyServer) forwardToTarget(rw http.ResponseWriter, req *http
 	}
 
 	go transfer(client, target)
-	transfer(target, client)
+	transfer(target, &hijackedClientConn{Reader: buffered.Reader, conn: client})
 }
 
 func (proxy *localProxyServer) forwardToRemoteProxy(rw http.ResponseWriter, req *http.Request) {
-	client, _, _ := rw.(http.Hijacker).Hijack()
-	var remoteProxy net.Conn
-	var err error
-
-	remoteProxyAddr := appendPort(proxy.remoteProxyAddr.Host, proxy.remoteProxyAddr.Scheme)
-
-	if proxy.remoteProxyAddr.Scheme == "https" {
-		remoteProxy, err = tls.Dial("tcp", remoteProxyAddr, nil)
-	} else {
-		remoteProxy, err = net.Dial("tcp", remoteProxyAddr)
+	if req.Method == http.MethodConnect {
+		proxy.forwardConnectToRemoteProxy(rw, req)
+		return
 	}
+	proxy.forwardPlainHTTPToRemoteProxy(rw, req)
+}
+
+func (proxy *localProxyServer) forwardConnectToRemoteProxy(rw http.ResponseWriter, req *http.Request) {
+	client, buffered, err := rw.(http.Hijacker).Hijack()
 	if err != nil {
+		log.Printf("hijack failed for CONNECT %s: %v", req.Host, err)
 		return
 	}
 
-	req.Header.Set(headerSecret, proxy.secretKey)
-	req.Write(remoteProxy)
+	tunnel, err := proxy.tunnel.ConnectTunnel(context.Background(), req.Host)
+	if err != nil {
+		log.Printf("h2 tunnel to remote proxy for CONNECT %s failed: %v (local and remote must be upgraded together)", req.Host, err)
+		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n502 Bad Gateway: cannot open an HTTP/2 tunnel to the remote proxy (%v).\r\nThe remote proxy must support the HTTP/2 CONNECT tunnel; upgrade local and remote together.\r\n", err)
+		_ = client.Close()
+		return
+	}
 
-	go transfer(remoteProxy, client)
-	transfer(client, remoteProxy)
+	if _, err := fmt.Fprintf(client, "%s 200 OK\r\n\r\n", req.Proto); err != nil {
+		log.Printf("write CONNECT response to client for %s: %v", req.Host, err)
+		_ = tunnel.Close()
+		_ = client.Close()
+		return
+	}
+
+	go transfer(tunnel, &hijackedClientConn{Reader: buffered.Reader, conn: client})
+	transfer(client, tunnel)
+}
+
+func (proxy *localProxyServer) forwardPlainHTTPToRemoteProxy(rw http.ResponseWriter, req *http.Request) {
+	targetScheme := req.URL.Scheme
+	if targetScheme == "" {
+		targetScheme = "http"
+	}
+	targetHost := req.URL.Host
+	if targetHost == "" {
+		targetHost = req.Host
+	}
+
+	fwd := &http.Request{
+		Method: req.Method,
+		URL: &url.URL{
+			Scheme:   targetScheme,
+			Host:     targetHost,
+			Path:     req.URL.Path,
+			RawPath:  req.URL.RawPath,
+			RawQuery: req.URL.RawQuery,
+		},
+		Header:        filterHopByHop(req.Header),
+		Body:          req.Body,
+		ContentLength: req.ContentLength,
+		Host:          req.Host,
+	}
+	fwd = fwd.WithContext(req.Context())
+
+	resp, err := proxy.tunnel.RoundTrip(fwd)
+	if err != nil {
+		log.Printf("h2 forward of %s %s via remote proxy failed: %v (local and remote must be upgraded together)", req.Method, targetHost, err)
+		http.Error(rw, fmt.Sprintf("502 Bad Gateway: cannot reach the remote proxy over HTTP/2 (%v). The remote proxy must support the HTTP/2 tunnel; upgrade local and remote together.", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		if isHopByHopHeader(k) {
+			continue
+		}
+		for _, v := range vv {
+			rw.Header().Add(k, v)
+		}
+	}
+	rw.WriteHeader(resp.StatusCode)
+
+	flusher, _ := rw.(http.Flusher)
+	if flusher != nil {
+		_, _ = io.Copy(&flushWriter{w: rw, f: flusher}, resp.Body)
+		return
+	}
+	_, _ = io.Copy(rw, resp.Body)
 }
 
 func (proxy *localProxyServer) pullLatestIPRange(ctx context.Context) error {
@@ -187,9 +252,24 @@ func (proxy *localProxyServer) pullLatestIPRange(ctx context.Context) error {
 	return nil
 }
 
+type closeWriteCloser interface{ CloseWrite() error }
+type closeReadCloser interface{ CloseRead() error }
+
 func transfer(dst io.WriteCloser, src io.ReadCloser) {
-	defer dst.Close()
-	defer src.Close()
+	defer func() {
+		if cw, ok := dst.(closeWriteCloser); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
+	}()
+	defer func() {
+		if cr, ok := src.(closeReadCloser); ok {
+			_ = cr.CloseRead()
+		} else {
+			_ = src.Close()
+		}
+	}()
 	io.Copy(dst, src)
 }
 

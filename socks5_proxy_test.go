@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +36,7 @@ func newTestLocalProxy(dnsResolver dnsResovler, remoteProxyAddr string, forceFor
 	if err != nil {
 		panic(err)
 	}
+	tunnel := newTunnelClient(appendPort(u.Host, u.Scheme), u.Scheme, "test-secret-key", 2, &tls.Config{InsecureSkipVerify: true})
 	return &localProxyServer{
 		remoteProxyAddr:           u,
 		secretKey:                 "test-secret-key",
@@ -43,6 +44,7 @@ func newTestLocalProxy(dnsResolver dnsResovler, remoteProxyAddr string, forceFor
 		forceForwardToRemoteProxy: forceForwardToRemoteProxy,
 		client:                    &http.Client{},
 		dns:                       dnsResolver,
+		tunnel:                    tunnel,
 	}
 }
 
@@ -59,46 +61,39 @@ func startSniffProxy(t *testing.T, local *localProxyServer) string {
 	return ln.Addr().String()
 }
 
-// mockRemoteProxy 记录收到的 CONNECT 请求头，并回 200 OK；随后进入 echo 模式。
-func mockRemoteProxy(t *testing.T, responseHead string) (addr string, captured chan string) {
+func mockH2RemoteProxy(t *testing.T, handler http.HandlerFunc) (addr string, captured chan *http.Request) {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.Nil(t, err)
-	captured = make(chan string, 1)
-
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+	captured = make(chan *http.Request, 64)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case captured <- r:
+		default:
 		}
-		defer conn.Close()
+		handler(w, r)
+	})
 
-		br := bufio.NewReader(conn)
-		var head bytes.Buffer
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil {
-				return
-			}
-			head.WriteString(line)
-			if line == "\r\n" {
-				break
-			}
-		}
-		captured <- head.String()
+	srv := httptest.NewUnstartedServer(h)
+	srv.TLS = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
 
-		if _, err := io.WriteString(conn, responseHead); err != nil {
-			return
-		}
-		if strings.HasPrefix(responseHead, "HTTP/1.1 200") {
-			_, _ = io.Copy(conn, conn)
-		}
-	}()
+	return strings.TrimPrefix(srv.URL, "https://"), captured
+}
 
-	return ln.Addr().String(), captured
+func h2TunnelEchoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher == nil {
+		_, _ = io.Copy(w, r.Body)
+		return
+	}
+	flusher.Flush()
+	_, _ = io.Copy(&flushWriter{w: w, f: flusher}, r.Body)
 }
 
 func doSOCKS5Handshake(t *testing.T, conn net.Conn, cmd byte, atyp byte, addr []byte, port uint16) byte {
@@ -160,7 +155,6 @@ func TestSOCKS5AndHTTPOnSamePort(t *testing.T) {
 	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("127.0.0.1")}, "http://127.0.0.1:1", false)
 	addr := startSniffProxy(t, local)
 
-	// HTTP 代理（首字节非 0x05）
 	proxyURL, err := url.Parse("http://" + addr)
 	require.Nil(t, err)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
@@ -171,7 +165,6 @@ func TestSOCKS5AndHTTPOnSamePort(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, originBody, string(body))
 
-	// SOCKS5（首字节 0x05）
 	conn := doSOCKS5Connect(t, addr, 0x01, []byte{127, 0, 0, 1}, portOf(t, origin))
 	defer conn.Close()
 
@@ -184,9 +177,9 @@ func TestSOCKS5AndHTTPOnSamePort(t *testing.T) {
 }
 
 func TestSOCKS5ConnectDomainForwardedToRemote(t *testing.T) {
-	remoteAddr, captured := mockRemoteProxy(t, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	remoteAddr, captured := mockH2RemoteProxy(t, h2TunnelEchoHandler)
 
-	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "http://"+remoteAddr, false)
+	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "https://"+remoteAddr, false)
 	addr := startSniffProxy(t, local)
 
 	conn := doSOCKS5Connect(t, addr, 0x03, domainAddr("example.com"), 443)
@@ -200,19 +193,21 @@ func TestSOCKS5ConnectDomainForwardedToRemote(t *testing.T) {
 	require.Equal(t, "ping-through-tunnel", string(echo))
 
 	select {
-	case head := <-captured:
-		require.Contains(t, head, "CONNECT example.com:443 HTTP/1.1")
-		require.Contains(t, head, "Host: example.com:443")
-		require.Contains(t, head, "Misha-Secret: test-secret-key")
+	case req := <-captured:
+		require.Equal(t, http.MethodConnect, req.Method)
+		require.Equal(t, "example.com:443", req.Host)
+		require.Equal(t, "test-secret-key", req.Header.Get("X-Api-Key"))
 	case <-time.After(5 * time.Second):
 		t.Fatal("remote proxy did not receive the CONNECT request")
 	}
 }
 
 func TestSOCKS5ConnectRemoteNon200(t *testing.T) {
-	remoteAddr, _ := mockRemoteProxy(t, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+	remoteAddr, _ := mockH2RemoteProxy(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
 
-	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "http://"+remoteAddr, false)
+	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "https://"+remoteAddr, false)
 	addr := startSniffProxy(t, local)
 
 	conn, err := net.Dial("tcp", addr)
@@ -330,35 +325,36 @@ func TestSOCKS5ForceForwardToRemoteProxy(t *testing.T) {
 	defer origin.Close()
 
 	_, originPort := splitHostPort(t, origin.Listener.Addr().String())
-	remoteAddr, captured := mockRemoteProxy(t, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	remoteAddr, captured := mockH2RemoteProxy(t, h2TunnelEchoHandler)
 
-	// 127.0.0.1 属私网本应直连，force-forward 后仍走 remote
-	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("127.0.0.1")}, "http://"+remoteAddr, true)
+	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("127.0.0.1")}, "https://"+remoteAddr, true)
 	addr := startSniffProxy(t, local)
 
 	conn := doSOCKS5Connect(t, addr, 0x01, []byte{127, 0, 0, 1}, originPort)
 	defer conn.Close()
 
 	select {
-	case head := <-captured:
-		require.Contains(t, head, fmt.Sprintf("CONNECT 127.0.0.1:%d", originPort))
+	case req := <-captured:
+		require.Equal(t, http.MethodConnect, req.Method)
+		require.Equal(t, fmt.Sprintf("127.0.0.1:%d", originPort), req.Host)
 	case <-time.After(5 * time.Second):
 		t.Fatal("remote proxy did not receive the forced CONNECT request")
 	}
 }
 
 func TestSOCKS5IPv4LiteralUsesRemotePath(t *testing.T) {
-	remoteAddr, captured := mockRemoteProxy(t, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+	remoteAddr, captured := mockH2RemoteProxy(t, h2TunnelEchoHandler)
 
-	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "http://"+remoteAddr, false)
+	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("198.51.100.1")}, "https://"+remoteAddr, false)
 	addr := startSniffProxy(t, local)
 
 	conn := doSOCKS5Connect(t, addr, 0x01, []byte{198, 51, 100, 1}, 443)
 	defer conn.Close()
 
 	select {
-	case head := <-captured:
-		require.Contains(t, head, "CONNECT 198.51.100.1:443")
+	case req := <-captured:
+		require.Equal(t, http.MethodConnect, req.Method)
+		require.Equal(t, "198.51.100.1:443", req.Host)
 	case <-time.After(5 * time.Second):
 		t.Fatal("remote proxy did not receive the CONNECT request")
 	}
@@ -433,7 +429,6 @@ func TestHTTPProxyDirectDialsResolvedIP(t *testing.T) {
 		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"))
 	}()
 
-	// example.com 被解析为 127.0.0.1（私网，走直连）；若仍按域名 net.Dial 则必然失败
 	local := newTestLocalProxy(&fakeDNS{ip: net.ParseIP("127.0.0.1")}, "http://127.0.0.1:1", false)
 	addr := startSniffProxy(t, local)
 

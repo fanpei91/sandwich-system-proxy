@@ -9,13 +9,11 @@ import (
 
 var privateIPRange = &iPRangeDB{
 	db: []*ipRange{
-		// private
 		{value: "192.168.0.0/16"},
 		{value: "172.16.0.0/12"},
 		{value: "10.0.0.0/8"},
 		{value: "fc00::/7"},
 
-		// loopback
 		{value: "127.0.0.0/8"},
 		{value: "::1/128"},
 	},

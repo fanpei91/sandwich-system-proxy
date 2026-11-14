@@ -5,8 +5,6 @@ import (
 	"net"
 )
 
-// sniffingListener 嗅探入站连接的首字节：0x05 走 SOCKS5，其余走 HTTP 代理。
-// 两种协议的处理器共用同一个端口，避免新增监听端口。
 type sniffingListener struct {
 	net.Listener
 	handleSOCKS5 func(*bufio.Reader, net.Conn)
@@ -32,7 +30,6 @@ func (l *sniffingListener) Accept() (net.Conn, error) {
 	}
 }
 
-// peekConn 把嗅探阶段缓冲的字节重新喂回给读取方。
 type peekConn struct {
 	net.Conn
 	reader *bufio.Reader

@@ -30,6 +30,7 @@ type LocalProxyFlags struct {
 	forceForwardToRemoteProxy     bool
 	secretKey                     string
 	pullLatestIPDBDurationInHours int
+	remotePoolSize                int
 }
 
 type RemoteProxyFlags struct {
@@ -99,6 +100,12 @@ func main() {
 				Value:       "<your secret key>",
 				Usage:       "secret key required by remote proxy",
 				Destination: &localProxyFlags.secretKey,
+			},
+			&cli.IntFlag{
+				Name:        "remote-pool-size",
+				Value:       2,
+				Usage:       "number of pooled HTTP/2 transport connections to the remote proxy",
+				Destination: &localProxyFlags.remotePoolSize,
 			},
 		},
 		Action: localProxyServerCmdAction,
@@ -185,17 +192,18 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		return errors.New("parse remote proxy address error: " + err.Error())
 	}
 
-	h := make(http.Header)
-	h.Set(headerSecret, localProxyFlags.secretKey)
+	tunnel := newTunnelClient(
+		appendPort(u.Host, u.Scheme),
+		u.Scheme,
+		localProxyFlags.secretKey,
+		localProxyFlags.remotePoolSize,
+		nil,
+	)
 
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: func(request *http.Request) (i *url.URL, e error) {
-				request.Header.Set(headerSecret, localProxyFlags.secretKey)
-				return u, nil
-			},
-			TLSClientConfig:    &tls.Config{InsecureSkipVerify: false},
-			ProxyConnectHeader: h,
+			Proxy:       nil,
+			DialContext: tunnel.DialContext,
 		},
 	}
 
@@ -215,6 +223,7 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		forceForwardToRemoteProxy: localProxyFlags.forceForwardToRemoteProxy,
 		client:                    client,
 		dns:                       dns,
+		tunnel:                    tunnel,
 	}
 
 	listenHost, _, err := net.SplitHostPort(localProxyFlags.listenAddr)
@@ -301,6 +310,8 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		GetCertificate: m.GetCertificate,
 		NextProtos: []string{
 			acme.ALPNProto,
+			"h2",
+			"http/1.1",
 		},
 	}
 

@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 
 	"github.com/juju/ratelimit"
 )
@@ -23,8 +23,13 @@ type remoteProxyServer struct {
 }
 
 func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if req.Header.Get(headerSecret) == proxy.secretKey {
-		proxy.forwardToTarget(rw, req)
+	if req.Header.Get(headerAPIKey) == proxy.secretKey {
+		if req.ProtoMajor == 2 {
+			proxy.forwardToTarget(rw, req)
+			return
+		}
+		log.Printf("reject h1 request with valid X-Api-Key from %s: legacy local proxy (upgrade local and remote together)", req.RemoteAddr)
+		http.Error(rw, "legacy local proxy: HTTP/1.1 tunnel removed; upgrade local and remote together", http.StatusForbidden)
 		return
 	}
 
@@ -32,37 +37,75 @@ func (proxy *remoteProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Requ
 }
 
 func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *http.Request) {
-	req.Header.Del(headerSecret)
+	req.Header.Del(headerAPIKey)
 	targetAddr := appendPort(req.Host, req.URL.Scheme)
 
 	target, err := proxy.dialTarget(targetAddr)
 	if err != nil {
+		log.Printf("dial target %s error: %v", targetAddr, err)
 		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
-	localProxy, buffered, _ := rw.(http.Hijacker).Hijack()
+	if req.Method == http.MethodConnect {
+		rw.WriteHeader(http.StatusOK)
 
-	isConnect := req.Method == http.MethodConnect
-	if isConnect {
-		localProxy.Write([]byte(fmt.Sprintf("%s 200 OK\r\n\r\n", req.Proto)))
-	} else {
-		req.Write(target)
-	}
+		var targetToClient io.Writer = rw
+		flusher, _ := rw.(http.Flusher)
+		if flusher != nil {
+			flusher.Flush()
+			targetToClient = &flushWriter{w: rw, f: flusher}
+		}
 
-	client := &hijackedClientConn{Reader: buffered.Reader, conn: localProxy}
+		go func() {
+			_, _ = io.Copy(target, req.Body)
+			if cw, ok := target.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+		}()
 
-	go func() {
 		reader := &resetTrackingReader{r: target}
-		n, _ := io.Copy(localProxy, reader)
-		if isConnect && n == 0 && reader.reset {
+		n, _ := io.Copy(targetToClient, reader)
+		if n == 0 && reader.reset {
 			proxy.fallbackHosts.add(targetAddr)
 		}
-		target.Close()
-		localProxy.Close()
-	}()
+		_ = target.Close()
+		return
+	}
 
-	transfer(target, client)
+	defer target.Close()
+	if err := req.Write(target); err != nil {
+		log.Printf("write request to origin %s error: %v", targetAddr, err)
+		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	br := bufio.NewReader(target)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		log.Printf("read response from origin %s error: %v", targetAddr, err)
+		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		if isHopByHopHeader(k) {
+			continue
+		}
+		for _, v := range vv {
+			rw.Header().Add(k, v)
+		}
+	}
+	rw.WriteHeader(resp.StatusCode)
+
+	flusher, _ := rw.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+		_, _ = io.Copy(&flushWriter{w: rw, f: flusher}, resp.Body)
+		return
+	}
+	_, _ = io.Copy(rw, resp.Body)
 }
 
 func (proxy *remoteProxyServer) dialTarget(targetAddr string) (net.Conn, error) {
@@ -71,7 +114,7 @@ func (proxy *remoteProxyServer) dialTarget(targetAddr string) (net.Conn, error) 
 			return dialSOCKS5(proxy.outboundProxy, targetAddr)
 		}
 	}
-	return net.Dial("tcp", targetAddr)
+	return (&net.Dialer{Timeout: 10 * time.Second}).Dial("tcp", targetAddr)
 }
 
 type hijackedClientConn struct {
@@ -80,6 +123,20 @@ type hijackedClientConn struct {
 }
 
 func (c *hijackedClientConn) Close() error {
+	return c.conn.Close()
+}
+
+func (c *hijackedClientConn) CloseRead() error {
+	if tc, ok := c.conn.(*net.TCPConn); ok {
+		return tc.CloseRead()
+	}
+	return nil
+}
+
+func (c *hijackedClientConn) CloseWrite() error {
+	if tc, ok := c.conn.(*net.TCPConn); ok {
+		return tc.CloseWrite()
+	}
 	return c.conn.Close()
 }
 
@@ -104,7 +161,6 @@ func (proxy *remoteProxyServer) serveAsWebsite(rw http.ResponseWriter, req *http
 		rw = newRatelimitResponseWriter(rw)
 	}
 
-	// 懒得为伪装网站提供内容，所以就扮演一个网站代理，把 proxy.staticReversedAddr 的内容返回给浏览者
 	httputil.NewSingleHostReverseProxy(u).ServeHTTP(rw, req)
 }
 

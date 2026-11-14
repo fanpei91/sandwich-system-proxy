@@ -3,15 +3,15 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"strconv"
-	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -71,7 +71,7 @@ func (proxy *localProxyServer) serveSOCKS5(br *bufio.Reader, conn net.Conn) {
 	if !proxy.useRemoteProxy(targetIP) {
 		dialAddr := net.JoinHostPort(targetIP.String(), req.port)
 		log.Println(fmt.Sprintf("origin <-> local(socks5) <-> %s(%s)", target, targetIP))
-		targetConn, err := net.Dial("tcp", dialAddr)
+		targetConn, err := net.DialTimeout("tcp", dialAddr, 10*time.Second)
 		if err != nil {
 			log.Printf("dial %s error: %v", dialAddr, err)
 			writeSOCKS5Reply(conn, socks5DialErrorReply(err))
@@ -167,7 +167,6 @@ func readSOCKS5Request(br *bufio.Reader) (*socks5Request, error) {
 }
 
 func writeSOCKS5Reply(conn net.Conn, rep byte) error {
-	// VER REP RSV ATYP(IPv4) 0.0.0.0 : 0.0.0.0, BND.* 回 0.0.0.0:0
 	buf := []byte{socks5Version, rep, 0x00, socks5AtypeIPv4, 0, 0, 0, 0, 0, 0}
 	_, err := conn.Write(buf)
 	return err
@@ -183,82 +182,19 @@ func socks5DialErrorReply(err error) byte {
 func (proxy *localProxyServer) forwardSOCKS5ToRemoteProxy(clientBR *bufio.Reader, client net.Conn, target string) {
 	remoteProxyAddr := appendPort(proxy.remoteProxyAddr.Host, proxy.remoteProxyAddr.Scheme)
 
-	var remoteProxy net.Conn
-	var err error
-	if proxy.remoteProxyAddr.Scheme == "https" {
-		remoteProxy, err = tls.Dial("tcp", remoteProxyAddr, nil)
-	} else {
-		remoteProxy, err = net.Dial("tcp", remoteProxyAddr)
-	}
+	tunnel, err := proxy.tunnel.ConnectTunnel(context.Background(), target)
 	if err != nil {
-		log.Printf("dial remote proxy %s error: %v", remoteProxyAddr, err)
+		log.Printf("h2 tunnel to remote proxy %s for CONNECT %s failed: %v (local and remote must be upgraded together)", remoteProxyAddr, target, err)
 		writeSOCKS5Reply(client, socks5DialErrorReply(err))
-		return
-	}
-	defer remoteProxy.Close()
-
-	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s: %s\r\n\r\n", target, target, headerSecret, proxy.secretKey)
-	if _, err := io.WriteString(remoteProxy, req); err != nil {
-		log.Printf("write remote proxy %s error: %v", remoteProxyAddr, err)
-		writeSOCKS5Reply(client, socks5RepGeneralFailure)
-		return
-	}
-
-	remoteReader := bufio.NewReader(remoteProxy)
-	statusLine, err := remoteReader.ReadString('\n')
-	if err != nil {
-		log.Printf("read remote proxy %s response error: %v", remoteProxyAddr, err)
-		writeSOCKS5Reply(client, socks5RepGeneralFailure)
-		return
-	}
-
-	statusCode, err := parseSOCKS5UpstreamStatus(statusLine)
-	if err != nil || statusCode != 200 {
-		drainSOCKS5UpstreamHeaders(remoteReader)
-		log.Printf("remote proxy %s connect %s response: %s", remoteProxyAddr, target, strings.TrimSpace(statusLine))
-		writeSOCKS5Reply(client, socks5RepGeneralFailure)
-		return
-	}
-	if err := drainSOCKS5UpstreamHeaders(remoteReader); err != nil {
-		log.Printf("read remote proxy %s response headers error: %v", remoteProxyAddr, err)
-		writeSOCKS5Reply(client, socks5RepGeneralFailure)
 		return
 	}
 
 	if err := writeSOCKS5Reply(client, socks5RepSuccess); err != nil {
+		log.Printf("write socks5 success reply to client for %s: %v", target, err)
+		_ = tunnel.Close()
 		return
 	}
 
-	go transfer(client, &hijackedClientConn{Reader: remoteReader, conn: remoteProxy})
-	transfer(remoteProxy, &hijackedClientConn{Reader: clientBR, conn: client})
-}
-
-func parseSOCKS5UpstreamStatus(statusLine string) (int, error) {
-	fields := strings.Fields(statusLine)
-	if len(fields) < 2 {
-		return 0, fmt.Errorf("malformed status line %q", strings.TrimSpace(statusLine))
-	}
-	code, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return 0, fmt.Errorf("malformed status code in %q", strings.TrimSpace(statusLine))
-	}
-	return code, nil
-}
-
-func drainSOCKS5UpstreamHeaders(br *bufio.Reader) error {
-	for i := 0; ; i++ {
-		if i >= 100 {
-			return errors.New("too many header lines")
-		}
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		if len(line) > 8192 {
-			return errors.New("header line too long")
-		}
-		if line == "\r\n" || line == "\n" {
-			return nil
-		}
-	}
+	go transfer(tunnel, &hijackedClientConn{Reader: clientBR, conn: client})
+	transfer(client, tunnel)
 }
