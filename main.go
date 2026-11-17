@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
+
 	"github.com/robfig/cron/v3"
 	"github.com/urfave/cli/v2"
 )
@@ -24,7 +25,6 @@ type LocalProxyFlags struct {
 	listenAddr                    string
 	remoteProxyAddr               string
 	dnsOverHttpsProvider          string
-	staticDnsTTLInSeconds         int
 	forceForwardToRemoteProxy     bool
 	secretKey                     string
 	pullLatestIPDBDurationInHours int
@@ -68,12 +68,6 @@ func main() {
 				Value:       "https://doh.360.cn/dns-query",
 				Usage:       "DNS over HTTPS provider",
 				Destination: &localProxyFlags.dnsOverHttpsProvider,
-			},
-			&cli.IntFlag{
-				Name:        "static-dns-ttl-seconds",
-				Value:       86400,
-				Usage:       "static DNS TTL in seconds",
-				Destination: &localProxyFlags.staticDnsTTLInSeconds,
 			},
 			&cli.BoolFlag{
 				Name:        "force-forward-to-remote-proxy",
@@ -179,8 +173,7 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 	dns := newCachedDNS(
 		&dnsOverHostsFile{},
 		&dnsOverHTTPS{
-			provider:  localProxyFlags.dnsOverHttpsProvider,
-			staticTTL: time.Duration(localProxyFlags.staticDnsTTLInSeconds) * time.Second,
+			provider: localProxyFlags.dnsOverHttpsProvider,
 		},
 		&dnsOverUDP{},
 	)

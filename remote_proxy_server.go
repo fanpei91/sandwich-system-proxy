@@ -40,7 +40,7 @@ func (proxy *remoteProxyServer) forwardToTarget(rw http.ResponseWriter, req *htt
 	localProxy, _, _ := rw.(http.Hijacker).Hijack()
 
 	if req.Method == http.MethodConnect {
-		localProxy.Write([]byte(fmt.Sprintf("%s 200 OK\r\n\r\n", req.Proto)))
+		localProxy.Write([]byte(fmt.Sprintf("%s 200 Connection established\r\n\r\n", req.Proto)))
 	} else {
 		req.Write(target)
 	}
