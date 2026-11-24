@@ -190,8 +190,14 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		&dnsOverUDP{},
 	)
 
+	transport, err := newRemoteTransportSelector(u, localProxyFlags.secretKey)
+	if err != nil {
+		return errors.New("set up remote proxy transport error: " + err.Error())
+	}
+	defer transport.close()
+
 	localProxy := &localProxyServer{
-		remoteProxyAddr:           u,
+		transport:                 transport,
 		secretKey:                 localProxyFlags.secretKey,
 		chinaIPRangeDB:            newChinaIPRangeDB(),
 		forceForwardToRemoteProxy: localProxyFlags.forceForwardToRemoteProxy,
