@@ -21,6 +21,8 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+var Version = "unknown"
+
 type LocalProxyFlags struct {
 	listenAddr                    string
 	remoteProxyAddr               string
@@ -131,10 +133,20 @@ func main() {
 		Action: remoteProxyServerCmdAction,
 	}
 
+	versionCmd := &cli.Command{
+		Name:  "version",
+		Usage: "print the git commit the binary was built from",
+		Action: func(c *cli.Context) error {
+			fmt.Println(Version)
+			return nil
+		},
+	}
+
 	app := &cli.App{
 		Commands: []*cli.Command{
 			localProxyCmd,
 			remoteProxyCmd,
+			versionCmd,
 		},
 	}
 
