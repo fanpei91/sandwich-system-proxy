@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,10 +17,16 @@ const (
 	transportHTTPS = "https"
 )
 
-// errTransportUnavailable marks a failure of the transport itself, e.g. an
-// unreachable remote proxy. Only these failures are worth retrying over another
-// transport; configuration mistakes (wrong secret) and target failures are not.
-var errTransportUnavailable = errors.New("remote proxy transport unavailable")
+var (
+	// errTransportUnavailable marks a failure of the transport itself, e.g. a
+	// QUIC handshake that timed out or an unreachable remote proxy. Only these
+	// failures are worth retrying over another transport; configuration
+	// mistakes (wrong secret) and target failures are not.
+	errTransportUnavailable = errors.New("remote proxy transport unavailable")
+	errRemoteDialFailed     = errors.New("remote proxy failed to dial the target")
+	errRemoteAuthFailed     = errors.New("remote proxy rejected the secret key")
+	errRemoteUnsupported    = errors.New("remote proxy does not understand the tunnel protocol")
+)
 
 // remoteTransport opens a tunnel to the remote proxy for one hijacked client
 // connection. Implementations own their protocol handshake and return a duplex
@@ -35,13 +43,52 @@ type remoteTransport interface {
 	close() error
 }
 
+func parseRemoteTransport(s string) (string, error) {
+	switch s {
+	case transportAuto, transportQUIC, transportHTTPS:
+		return s, nil
+	default:
+		return "", fmt.Errorf("unknown remote proxy transport %q, want one of %s, %s, %s",
+			s, transportAuto, transportQUIC, transportHTTPS)
+	}
+}
+
 type remoteTransportSelector struct {
 	transports []remoteTransport
 }
 
-func newRemoteTransportSelector(remoteProxyAddr *url.URL, secretKey string) (*remoteTransportSelector, error) {
+func newRemoteTransportSelector(remoteProxyAddr *url.URL, secretKey, mode string) (*remoteTransportSelector, error) {
+	mode, err := parseRemoteTransport(mode)
+	if err != nil {
+		return nil, err
+	}
+
 	tcp := &tcpRemoteTransport{remoteProxyAddr: remoteProxyAddr, secretKey: secretKey}
-	return &remoteTransportSelector{transports: []remoteTransport{tcp}}, nil
+	if mode == transportHTTPS {
+		return &remoteTransportSelector{transports: []remoteTransport{tcp}}, nil
+	}
+
+	// QUIC needs TLS, so plain http remote proxies only ever speak the TCP protocol.
+	if remoteProxyAddr.Scheme != "https" {
+		if mode == transportQUIC {
+			return nil, fmt.Errorf("quic transport requires an https remote proxy address, got %q", remoteProxyAddr.Host)
+		}
+		return &remoteTransportSelector{transports: []remoteTransport{tcp}}, nil
+	}
+
+	quicTransport, err := newQUICRemoteTransport(remoteProxyAddr, secretKey)
+	if err != nil {
+		if mode == transportQUIC {
+			return nil, err
+		}
+		log.Printf("[quic] disabled, using %s only: %v", transportHTTPS, err)
+		return &remoteTransportSelector{transports: []remoteTransport{tcp}}, nil
+	}
+
+	if mode == transportQUIC {
+		return &remoteTransportSelector{transports: []remoteTransport{quicTransport}}, nil
+	}
+	return &remoteTransportSelector{transports: []remoteTransport{quicTransport, tcp}}, nil
 }
 
 // dial tries every transport in order and reports which one was used. It only

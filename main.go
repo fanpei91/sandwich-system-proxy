@@ -26,6 +26,7 @@ var Version = "unknown"
 type LocalProxyFlags struct {
 	listenAddr                    string
 	remoteProxyAddr               string
+	remoteProxyTransport          string
 	dnsOverHttpsProvider          string
 	forceForwardToRemoteProxy     bool
 	secretKey                     string
@@ -37,6 +38,8 @@ type RemoteProxyFlags struct {
 	certCacheDir           string
 	staticReversedUrl      string
 	enableWebsiteRatelimit bool
+	enableQUIC             bool
+	quicListenAddr         string
 	secretKey              string
 }
 
@@ -64,6 +67,12 @@ func main() {
 				Value:       "https://yourdomain.com",
 				Usage:       "remote proxy address",
 				Destination: &localProxyFlags.remoteProxyAddr,
+			},
+			&cli.StringFlag{
+				Name:        "remote-proxy-transport",
+				Value:       transportAuto,
+				Usage:       "transport to the remote proxy: auto (QUIC with HTTPS fallback), quic or https",
+				Destination: &localProxyFlags.remoteProxyTransport,
 			},
 			&cli.StringFlag{
 				Name:        "dns-over-https-provider",
@@ -122,6 +131,18 @@ func main() {
 				Value:       true,
 				Usage:       "enable rate limiting for website",
 				Destination: &remoteProxyFlags.enableWebsiteRatelimit,
+			},
+			&cli.BoolFlag{
+				Name:        "enable-quic",
+				Value:       true,
+				Usage:       "serve the QUIC tunnel on --quic-listen-addr/udp",
+				Destination: &remoteProxyFlags.enableQUIC,
+			},
+			&cli.StringFlag{
+				Name:        "quic-listen-addr",
+				Value:       ":443",
+				Usage:       "UDP listen address for QUIC (port must not clash with TCP 443)",
+				Destination: &remoteProxyFlags.quicListenAddr,
 			},
 			&cli.StringFlag{
 				Name:        "secret-key",
@@ -190,7 +211,7 @@ func localProxyServerCmdAction(_ *cli.Context) error {
 		&dnsOverUDP{},
 	)
 
-	transport, err := newRemoteTransportSelector(u, localProxyFlags.secretKey)
+	transport, err := newRemoteTransportSelector(u, localProxyFlags.secretKey, localProxyFlags.remoteProxyTransport)
 	if err != nil {
 		return errors.New("set up remote proxy transport error: " + err.Error())
 	}
@@ -261,6 +282,27 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		NextProtos: []string{
 			acme.ALPNProto,
 		},
+	}
+
+	if remoteProxyFlags.enableQUIC {
+		quicServer, err := newQUICRemoteProxyServer(
+			remoteProxyFlags.quicListenAddr,
+			remoteProxyFlags.secretKey,
+			tlsConfig,
+		)
+		if err != nil {
+			// Losing UDP must not take the TCP side down: old local proxies and
+			// the masquerade website keep working.
+			log.Printf("failed to start QUIC server on %s/udp, serving TCP only: %v", remoteProxyFlags.quicListenAddr, err)
+		} else {
+			defer quicServer.Close()
+			go func() {
+				log.Printf("Starting QUIC tunnel server on %s/udp", quicServer.Addr())
+				if err := quicServer.Serve(); err != nil {
+					log.Printf("QUIC server stopped: %v", err)
+				}
+			}()
+		}
 	}
 
 	s := &http.Server{Addr: ":443", TLSConfig: tlsConfig, Handler: remoteProxy}
