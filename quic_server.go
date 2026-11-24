@@ -8,22 +8,27 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 const quicTargetDialTimeout = 10 * time.Second
 
-// quicRemoteProxyServer accepts tunnel connections from local proxies.
+// quicRemoteProxyServer serves two ALPNs on one UDP port: HTTP/3 for anyone who
+// probes the domain with a browser or a scanner (it gets the same masquerade
+// site as TCP visitors), and the tunnel protocol for local proxies.
 type quicRemoteProxyServer struct {
 	secretKey string
 	transport *quic.Transport
 	udpConn   *net.UDPConn
 	listener  *quic.Listener
+	http3     *http3.Server
 }
 
-func newQUICRemoteProxyServer(listenAddr, secretKey string, tlsConfig *tls.Config) (*quicRemoteProxyServer, error) {
+func newQUICRemoteProxyServer(listenAddr, secretKey string, website http.Handler, tlsConfig *tls.Config) (*quicRemoteProxyServer, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
 		return nil, err
@@ -34,7 +39,7 @@ func newQUICRemoteProxyServer(listenAddr, secretKey string, tlsConfig *tls.Confi
 	}
 
 	quicTLSConfig := tlsConfig.Clone()
-	quicTLSConfig.NextProtos = []string{quicProtoName}
+	quicTLSConfig.NextProtos = []string{http3.NextProtoH3, quicProtoName}
 
 	transport := &quic.Transport{Conn: udpConn}
 	listener, err := transport.Listen(quicTLSConfig, quicTunnelConfig())
@@ -49,6 +54,7 @@ func newQUICRemoteProxyServer(listenAddr, secretKey string, tlsConfig *tls.Confi
 		transport: transport,
 		udpConn:   udpConn,
 		listener:  listener,
+		http3:     &http3.Server{Handler: website},
 	}, nil
 }
 
@@ -68,19 +74,25 @@ func (s *quicRemoteProxyServer) Serve() error {
 }
 
 func (s *quicRemoteProxyServer) Close() error {
+	s.http3.Close()
 	s.listener.Close()
 	_ = s.transport.Close()
 	return s.udpConn.Close()
 }
 
 func (s *quicRemoteProxyServer) handleConn(conn *quic.Conn) {
-	if conn.ConnectionState().TLS.NegotiatedProtocol != quicProtoName {
+	switch conn.ConnectionState().TLS.NegotiatedProtocol {
+	case quicProtoName:
+		s.handleTunnelConn(conn)
+	case http3.NextProtoH3:
+		// Browsers and scanners probing the port get the same website as TCP
+		// visitors; their errors are not worth logging.
+		_ = s.http3.ServeQUICConn(conn)
+	default:
 		// Unknown ALPN: close without any application level detail, so the
 		// port reveals as little as possible.
 		conn.CloseWithError(0, "")
-		return
 	}
-	s.handleTunnelConn(conn)
 }
 
 func (s *quicRemoteProxyServer) handleTunnelConn(conn *quic.Conn) {

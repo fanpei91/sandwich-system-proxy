@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,7 +62,7 @@ func TestParseRemoteTransport(t *testing.T) {
 // target) for CONNECT and for plain HTTP requests.
 func TestQUICTunnel(t *testing.T) {
 	cert, roots := newTestCertificate(t)
-	tcpURL, quicAddr := startTestRemoteProxy(t, cert)
+	tcpURL, quicAddr := startTestRemoteProxy(t, cert, "masquerade")
 
 	target := httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		fmt.Fprintf(rw, "hello over connect %s", req.URL.Path)
@@ -99,11 +100,41 @@ func TestQUICTunnel(t *testing.T) {
 	}
 }
 
+// TestQUICWebsiteMasquerade checks that the UDP port also serves the fake
+// website over HTTP/3, so probing it does not reveal the tunnel.
+func TestQUICWebsiteMasquerade(t *testing.T) {
+	cert, roots := newTestCertificate(t)
+	website := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		fmt.Fprintf(rw, "website %s", req.URL.Path)
+	}))
+	defer website.Close()
+
+	_, quicAddr := startTestRemoteProxy(t, cert, website.URL)
+
+	tr := &http3.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}
+	defer tr.Close()
+	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+
+	res, err := client.Get("https://" + quicAddr + "/robots.txt")
+	require.NoError(t, err)
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, "User-agent: *\nDisallow: /", string(body))
+
+	res, err = client.Get("https://" + quicAddr + "/")
+	require.NoError(t, err)
+	body, err = io.ReadAll(res.Body)
+	res.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, "website /", string(body))
+}
+
 // TestFallbackToTCP covers the deployment case where UDP is blocked: the very
 // first request degrades to the HTTPS transport and still succeeds.
 func TestFallbackToTCP(t *testing.T) {
 	cert, roots := newTestCertificate(t)
-	tcpURL, _ := startTestRemoteProxy(t, cert)
+	tcpURL, _ := startTestRemoteProxy(t, cert, "masquerade")
 
 	target := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		fmt.Fprint(rw, "served over tcp")
@@ -132,7 +163,7 @@ func TestFallbackToTCP(t *testing.T) {
 
 func TestRemoteProxyFailuresDoNotDegradeQUIC(t *testing.T) {
 	cert, roots := newTestCertificate(t)
-	_, quicAddr := startTestRemoteProxy(t, cert)
+	_, quicAddr := startTestRemoteProxy(t, cert, "masquerade")
 
 	t.Run("wrong secret", func(t *testing.T) {
 		qt := newTestQUICTransport(t, quicAddr, "wrong-secret", roots)
@@ -198,12 +229,12 @@ func newTestCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
 
 // startTestRemoteProxy starts both faces of the remote proxy (TLS/TCP and
 // QUIC/UDP) with the same secret and masquerade website.
-func startTestRemoteProxy(t *testing.T, cert tls.Certificate) (*url.URL, string) {
+func startTestRemoteProxy(t *testing.T, cert tls.Certificate, websiteURL string) (*url.URL, string) {
 	t.Helper()
 
 	handler := &remoteProxyServer{
 		secretKey:          testSecretKey,
-		staticReversedAddr: "http://127.0.0.1:1",
+		staticReversedAddr: websiteURL,
 	}
 
 	tcpServer := httptest.NewUnstartedServer(handler)
@@ -214,7 +245,7 @@ func startTestRemoteProxy(t *testing.T, cert tls.Certificate) (*url.URL, string)
 	tcpURL, err := url.Parse(tcpServer.URL)
 	require.NoError(t, err)
 
-	quicServer, err := newQUICRemoteProxyServer("127.0.0.1:0", testSecretKey, &tls.Config{Certificates: []tls.Certificate{cert}})
+	quicServer, err := newQUICRemoteProxyServer("127.0.0.1:0", testSecretKey, handler, &tls.Config{Certificates: []tls.Certificate{cert}})
 	require.NoError(t, err)
 	t.Cleanup(func() { quicServer.Close() })
 	go func() { _ = quicServer.Serve() }()

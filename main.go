@@ -135,7 +135,7 @@ func main() {
 			&cli.BoolFlag{
 				Name:        "enable-quic",
 				Value:       true,
-				Usage:       "serve the QUIC tunnel on --quic-listen-addr/udp",
+				Usage:       "serve HTTP/3 and the QUIC tunnel on --quic-listen-addr/udp",
 				Destination: &remoteProxyFlags.enableQUIC,
 			},
 			&cli.StringFlag{
@@ -288,6 +288,7 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		quicServer, err := newQUICRemoteProxyServer(
 			remoteProxyFlags.quicListenAddr,
 			remoteProxyFlags.secretKey,
+			remoteProxy,
 			tlsConfig,
 		)
 		if err != nil {
@@ -297,7 +298,7 @@ func remoteProxyServerCmdAction(_ *cli.Context) error {
 		} else {
 			defer quicServer.Close()
 			go func() {
-				log.Printf("Starting QUIC tunnel server on %s/udp", quicServer.Addr())
+				log.Printf("Starting QUIC (HTTP/3 + tunnel) server on %s/udp", quicServer.Addr())
 				if err := quicServer.Serve(); err != nil {
 					log.Printf("QUIC server stopped: %v", err)
 				}
